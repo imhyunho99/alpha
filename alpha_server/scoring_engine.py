@@ -61,8 +61,17 @@ def calculate_scores(ticker):
     long_term_score = (return_score * 0.6) + (volatility_score * 0.4)
     scores['long'] = round(long_term_score, 2)
 
-    print(f"'{ticker}' 점수 계산 완료: {scores}")
-    return scores
+    # --- 최종 NaN 값 처리 ---
+    # 계산 과정에서 발생할 수 있는 모든 NaN 값을 0.0으로 변환하여 JSON 직렬화 오류 방지
+    final_scores = {}
+    for key, value in scores.items():
+        if pd.isna(value):
+            final_scores[key] = 0.0
+        else:
+            final_scores[key] = value
+
+    print(f"'{ticker}' 점수 계산 완료: {final_scores}")
+    return final_scores
 
 if __name__ == '__main__':
     # 테스트를 위해 AAPL에 대한 점수 계산
