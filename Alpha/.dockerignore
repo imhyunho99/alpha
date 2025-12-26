@@ -1,0 +1,30 @@
+# Git and venv
+.git
+.gitignore
+.dockerignore
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Data and sensitive info
+data/
+.env
+
+# IDE and OS specific
+.idea/
+.vscode/
+.DS_Store
+*.swo
+*.swp
+*.bak
+
+# Build artifacts
+Dockerfile
+*.exe
+dist/
+build/

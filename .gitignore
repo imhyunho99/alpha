@@ -1,0 +1,36 @@
+# Environments
+Alpha/venv/
+alpha_server/venv/
+
+# Python Caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Build & Dist Artifacts
+Alpha/build/
+Alpha/dist/
+Alpha/*.spec
+
+# Data & Models
+alpha_server/market_data/
+alpha_server/models/
+
+# OS / IDE specific
+.DS_Store
+*.swo
+*.swp
+*.bak
+.idea/
+.vscode/
+
+# Local configuration
+.env
+alpha_server/.env
+
+# Benchmark reports
+benchmark_*.txt
+performance_report.txt
+tdl.txt
+\n# Other projects\nCarLogoDetection/\nbidbar/\nkaggle_base/

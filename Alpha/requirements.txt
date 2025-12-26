@@ -1,0 +1,10 @@
+pandas
+scikit-learn
+yfinance
+argparse
+tabulate
+numpy
+PySide6
+pyinstaller
+python-dotenv
+requests

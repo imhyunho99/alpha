@@ -1,0 +1,6 @@
+pandas
+scikit-learn
+yfinance
+argparse
+tabulate
+numpy

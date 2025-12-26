@@ -1,0 +1,14 @@
+venv/
+__pycache__/
+*.pyc
+data/
+.env
+.DS_Store
+
+# Build artifacts
+build/
+dist/
+*.spec\n# Model files\n*.pkl\n*.pth\n*.h5
+\n# Model files\n*.pkl\n*.pth\n*.h5
+\n# Alpha Server Venv\nalpha_server/venv/
+\n# QuestDB data volume\nquestdb_data/

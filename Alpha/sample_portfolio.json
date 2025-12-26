@@ -1,0 +1,40 @@
+{
+  "portfolio_name": "My Diversified Portfolio",
+  "holdings": [
+    {
+      "symbol": "AAPL",
+      "name": "Apple Inc.",
+      "type": "Stock",
+      "quantity": 10,
+      "purchase_price": 150.00
+    },
+    {
+      "symbol": "GOOGL",
+      "name": "Alphabet Inc. (Class A)",
+      "type": "Stock",
+      "quantity": 5,
+      "purchase_price": 1000.00
+    },
+    {
+      "symbol": "SPY",
+      "name": "SPDR S&P 500 ETF Trust",
+      "type": "ETF",
+      "quantity": 20,
+      "purchase_price": 400.00
+    },
+    {
+      "symbol": "BTC-USD",
+      "name": "Bitcoin",
+      "type": "Cryptocurrency",
+      "quantity": 0.1,
+      "purchase_price": 30000.00
+    },
+    {
+      "symbol": "GLD",
+      "name": "SPDR Gold Shares",
+      "type": "ETF",
+      "quantity": 2,
+      "purchase_price": 170.00
+    }
+  ]
+}

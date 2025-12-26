@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+requests
+pandas
+yfinance
+scikit-learn
+numpy
+beautifulsoup4
+lxml
+questdb
+psycopg2-binary
