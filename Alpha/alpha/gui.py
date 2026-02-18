@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Slot
 from PySide6.QtGui import QFont
 
-from . import core
+from alpha import core
 
 class AlphaGUI(QMainWindow):
     def __init__(self):

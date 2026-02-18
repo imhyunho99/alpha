@@ -1,9 +1,14 @@
 import argparse
 import sys
-from . import core
-from . import gui
+from alpha import core
+from alpha import gui
 
 def main():
+    # 인자 없이 실행되면 GUI 모드로 실행
+    if len(sys.argv) == 1:
+        gui.start_gui()
+        return
+    
     parser = argparse.ArgumentParser(description="Alpha: AI 기반 투자 분석 및 추천 시스템")
     parser.add_argument("--version", action="version", version="Alpha v0.1.0")
     parser.add_argument("--gui", action="store_true", help="GUI 모드로 실행합니다.")
