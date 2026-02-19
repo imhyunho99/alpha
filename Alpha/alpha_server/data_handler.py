@@ -2,14 +2,19 @@ import yfinance as yf
 import pandas as pd
 import psycopg2
 from psycopg2 import sql
+import os
+from dotenv import load_dotenv
 from .asset_screener import get_all_tickers
 
+# 환경 변수 로드
+load_dotenv()
+
 # QuestDB connection parameters
-DB_HOST = "127.0.0.1"
-DB_PORT = 8812
-DB_NAME = "qdb"
-DB_USER = "admin"
-DB_PASSWORD = "quest"
+DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
+DB_PORT = int(os.getenv("DB_PORT", "8812"))
+DB_NAME = os.getenv("DB_NAME", "qdb")
+DB_USER = os.getenv("DB_USER", "admin")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "quest")
 TABLE_NAME = "stock_prices"
 
 def get_db_connection():

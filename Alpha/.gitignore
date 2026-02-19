@@ -3,7 +3,11 @@ venv/
 __pycache__/
 *.pyc
 *.pyo
+
+# Environment variables (CRITICAL - DO NOT COMMIT)
 .env
+.env.local
+.env.*.local
 
 # macOS
 .DS_Store
@@ -13,11 +17,25 @@ build/
 dist/
 *.spec
 
-# Model files (keep models directory but ignore large files)
+# Model files (large files)
 *.pkl
 *.pth
 *.h5
 *.joblib
+models/*.joblib
+models/*.h5
+
+# Data files
+*.csv
+*.json
+questdb_data/
+data/
+*.db
+*.sqlite
+
+# Logs
+*.log
+logs/
 
 # QuestDB
 questdb_data/
@@ -27,3 +45,19 @@ questdb_data/
 .vscode/
 *.swp
 *.swo
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Secrets and credentials
+secrets/
+credentials/
+*.pem
+*.key
+*.cert
