@@ -1,14 +1,29 @@
+# Python
 venv/
 __pycache__/
 *.pyc
-data/
+*.pyo
 .env
+
+# macOS
 .DS_Store
 
 # Build artifacts
 build/
 dist/
-*.spec\n# Model files\n*.pkl\n*.pth\n*.h5
-\n# Model files\n*.pkl\n*.pth\n*.h5
-\n# Alpha Server Venv\nalpha_server/venv/
-\n# QuestDB data volume\nquestdb_data/
+*.spec
+
+# Model files (keep models directory but ignore large files)
+*.pkl
+*.pth
+*.h5
+*.joblib
+
+# QuestDB
+questdb_data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

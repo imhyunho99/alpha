@@ -1,0 +1,57 @@
+{
+  "results": {
+    "short": [],
+    "medium": [],
+    "long": []
+  },
+  "snapshots": [
+    {
+      "date": "2025-02-19",
+      "holdings": {}
+    },
+    {
+      "date": "2025-03-21",
+      "holdings": {}
+    },
+    {
+      "date": "2025-04-20",
+      "holdings": {}
+    },
+    {
+      "date": "2025-05-20",
+      "holdings": {}
+    },
+    {
+      "date": "2025-06-19",
+      "holdings": {}
+    },
+    {
+      "date": "2025-07-19",
+      "holdings": {}
+    },
+    {
+      "date": "2025-08-18",
+      "holdings": {}
+    },
+    {
+      "date": "2025-09-17",
+      "holdings": {}
+    },
+    {
+      "date": "2025-10-17",
+      "holdings": {}
+    },
+    {
+      "date": "2025-11-16",
+      "holdings": {}
+    },
+    {
+      "date": "2025-12-16",
+      "holdings": {}
+    },
+    {
+      "date": "2026-01-15",
+      "holdings": {}
+    }
+  ]
+}

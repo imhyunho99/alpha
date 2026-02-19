@@ -1,10 +1,31 @@
+# Client dependencies
 pandas
 scikit-learn
 yfinance
-argparse
 tabulate
 numpy
 PySide6
 pyinstaller
 python-dotenv
 requests
+
+# Server dependencies
+fastapi
+uvicorn[standard]
+beautifulsoup4
+lxml
+psycopg2-binary
+joblib
+apscheduler
+
+# News & NLP dependencies
+feedparser
+textblob
+
+# Phase 2: Ensemble models
+xgboost
+lightgbm
+
+# Phase 3: Deep learning (optional)
+# tensorflow>=2.10.0
+# keras
