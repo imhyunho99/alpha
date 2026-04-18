@@ -3,6 +3,18 @@ import pandas as pd
 from datetime import datetime, timedelta
 from textblob import TextBlob
 import re
+import warnings
+
+# FinBERT 로드
+try:
+    from transformers import pipeline
+    warnings.filterwarnings('ignore', category=UserWarning)
+    # 로컬 캐시에 모델이 없으면 다운로드합니다. (처음 실행 시 다소 시간이 걸릴 수 있습니다.)
+    finbert_pipeline = pipeline("sentiment-analysis", model="ProsusAI/finbert")
+    FINBERT_AVAILABLE = True
+except Exception as e:
+    print(f"경고: FinBERT를 로드할 수 없습니다. 기본 TextBlob 감성 분석을 사용합니다. 오류: {e}")
+    FINBERT_AVAILABLE = False
 
 def fetch_news(ticker, days=7):
     """Yahoo Finance RSS에서 뉴스를 가져옵니다."""
@@ -42,6 +54,20 @@ def analyze_sentiment(text):
     # 간단한 전처리
     text = re.sub(r'http\S+', '', text)
     
+    if FINBERT_AVAILABLE:
+        try:
+            # FinBERT는 최대 512 토큰을 허용하므로, 긴 텍스트는 앞부분만 자릅니다.
+            result = finbert_pipeline(text[:500])[0]
+            label = result['label']
+            score = result['score'] # Confidence (0.0 ~ 1.0)
+            
+            if label == 'positive': return score
+            elif label == 'negative': return -score
+            else: return 0.0 # neutral
+        except Exception:
+            pass # FinBERT 실패 시 TextBlob으로 폴백
+            
+    # TextBlob (FinBERT 실패 또는 사용 불가 시)
     try:
         blob = TextBlob(text)
         return blob.sentiment.polarity

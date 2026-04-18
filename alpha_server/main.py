@@ -13,6 +13,7 @@ from .data_handler import update_all_data
 from .model_handler import update_all_models, train_model
 from .asset_screener import get_all_tickers
 from .scoring_engine import calculate_scores
+from .trading_handler import broker
 
 # 진행 상황 추적
 progress_status = {
@@ -33,6 +34,11 @@ class Holding(BaseModel):
 class PortfolioRequest(BaseModel):
     holdings: List[Holding]
 
+class OrderRequest(BaseModel):
+    ticker: str
+    action: str  # "buy" or "sell"
+    quantity: int
+
 # --- FastAPI 앱 초기화 ---
 app = FastAPI(
     title="Alpha AI 분석 서버",
@@ -41,6 +47,41 @@ app = FastAPI(
 )
 
 # --- API 엔드포인트 구현 ---
+
+@app.get("/trading/portfolio", summary="모의투자 포트폴리오 조회")
+def get_trading_portfolio():
+    """현재 가상 포트폴리오의 상태(현금 잔고, 보유 주식, 수익률)를 반환합니다."""
+    return broker.get_portfolio()
+
+@app.post("/trading/order", summary="수동 주문 실행")
+def place_order(order: OrderRequest):
+    """가상 브로커를 통해 특정 자산을 매수하거나 매도합니다."""
+    return broker.execute_order(order.ticker, order.action, order.quantity)
+
+@app.post("/trading/auto", summary="자동 매매 AI 1회 실행")
+def run_auto_trading():
+    """
+    관심 자산 중 상위 5개에 대해 AI 앙상블(기술적+뉴스+LSTM) 예측을 수행하고,
+    예측 결과('UP'/'DOWN')에 따라 모의투자를 자동으로 실행합니다.
+    """
+    from .ensemble_model import ensemble_predict
+    tickers = get_all_tickers()
+    results = []
+    
+    # 잦은 요청 제한을 위해 임의로 5개만 실행
+    for ticker in tickers[:5]:
+        pred = ensemble_predict(ticker)
+        if pred.get('prediction') == 'UP' and pred.get('confidence', 0) > 0.6:
+            # 확실한 상승 예측: 1주 매수
+            res = broker.execute_order(ticker, "buy", 1)
+            results.append({"ticker": ticker, "action": "buy", "result": res})
+        elif pred.get('prediction') == 'DOWN' and pred.get('confidence', 0) > 0.6:
+            # 확실한 하락 예측: 보유 중이면 매도
+            res = broker.execute_order(ticker, "sell", 1)
+            if res["status"] == "success":
+                results.append({"ticker": ticker, "action": "sell", "result": res})
+                
+    return {"message": "자동 매매 1회 실행 완료", "actions": results}
 
 @app.get("/")
 def read_root():

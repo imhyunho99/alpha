@@ -21,11 +21,13 @@ apscheduler
 # News & NLP dependencies
 feedparser
 textblob
+transformers
+torch
 
 # Phase 2: Ensemble models
 xgboost
 lightgbm
 
 # Phase 3: Deep learning (optional)
-# tensorflow>=2.10.0
-# keras
+tensorflow>=2.10.0
+keras
