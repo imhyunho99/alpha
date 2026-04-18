@@ -54,16 +54,36 @@ def get_top_100_crypto_tickers():
         # 실패 시 하드코딩된 일부 목록 반환
         return ['BTC-USD', 'ETH-USD', 'USDT-USD', 'BNB-USD', 'SOL-USD']
 
+def get_sp500_tickers():
+    """Wikipedia에서 S&P 500 구성 종목의 티커 목록을 가져옵니다."""
+    print("S&P 500 티커 목록 가져오는 중...")
+    try:
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        response = requests.get(url, headers={'User-Agent': 'Alpha-Project-Screener/1.0'})
+        response.raise_for_status()
+        
+        tables = pd.read_html(response.text)
+        sp500_table = tables[0]
+        tickers = sp500_table['Symbol'].tolist()
+        # 일부 티커 정리 (예: BRK.B -> BRK-B)
+        tickers = [t.replace('.', '-') for t in tickers]
+        print(f"성공: {len(tickers)}개의 S&P 500 티커를 찾았습니다.")
+        return tickers
+    except Exception as e:
+        print(f"오류: S&P 500 티커를 가져오는 중 오류 발생: {e}")
+        return ['AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META']
+
 def get_all_tickers():
     """모든 소스에서 티커를 취합하여 최종 자산 목록을 반환합니다."""
     nasdaq_tickers = get_nasdaq_100_tickers()
     crypto_tickers = get_top_100_crypto_tickers()
+    sp500_tickers = get_sp500_tickers()
     
     # 여기에 다른 ETF나 원자재 관련 티커를 추가할 수 있습니다.
     other_tickers = ['SPY', 'QQQ', 'GLD', 'SLV', 'USO']
     
     # 중복을 제거하고 합칩니다.
-    all_tickers = list(set(nasdaq_tickers + crypto_tickers + other_tickers))
+    all_tickers = list(set(nasdaq_tickers + crypto_tickers + sp500_tickers + other_tickers))
     print(f"총 {len(all_tickers)}개의 고유한 자산을 추적합니다.")
     return all_tickers
 

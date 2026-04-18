@@ -1,194 +1,248 @@
-# Alpha v2.0
+# Alpha - AI 기반 투자 분석 시스템
 
-Alpha는 AI 기반 투자 추천 시스템으로, 앙상블 머신러닝 모델을 활용하여 주식 및 암호화폐의 투자 가치를 분석합니다.  
-NASDAQ 100과 Top 100 암호화폐를 대상으로 기술적 지표를 분석하고, 단기/중기/장기 투자 추천을 제공합니다.
+Alpha는 AI 기반의 투자 분석 및 추천 시스템입니다. 동적 자산 스크리닝, 머신러닝 예측, 투자 가치 스코어링을 통해 최적의 투자 기회를 제공합니다.
 
-## 데모
+## 🎯 주요 기능
 
-**평균 정확도**: 71.79% (기존 55-58% 대비 +27.1% 개선)  
-**예상 연간 수익률**: 19.79% (S&P 500 대비 +9.79%p)  
-**분석 대상**: 206개 자산 (주식 + 암호화폐)
+- **동적 자산 스크리닝**: NASDAQ 100, 암호화폐 상위 100개 자동 수집
+- **AI 예측 모델**: RandomForest 기반 가격 방향 예측
+- **투자 가치 스코어링**: 단기/중기/장기 관점별 투자 점수 산출
+- **포트폴리오 분석**: 보유 자산의 성과 및 투자 가치 평가
+- **GUI 클라이언트**: 직관적인 PySide6 기반 사용자 인터페이스
 
----
+## 📋 시스템 요구사항
 
-## 기술 스택
+- Python 3.10 이상
+- macOS, Linux, Windows
+- (선택) QuestDB - 고성능 시계열 데이터베이스
 
-### Backend
-- Python
-- FastAPI
-- QuestDB (시계열 데이터베이스)
-- scikit-learn
-- XGBoost
-- LightGBM
+## 🚀 빠른 시작
 
-### Frontend
-- PySide6 (Qt for Python)
+### 1. 시스템 테스트
 
-### AI/ML
-- **Ensemble Model**: RandomForest + XGBoost + LightGBM
-- **특성 엔지니어링**: 13개 기술적 지표 (SMA, RSI, MACD, Bollinger Bands 등)
-- **예측 정확도**: 평균 71.79%, 상위 55개 자산 100% 정확도
-
-### 데이터
-- yfinance (Yahoo Finance API)
-- QuestDB (시계열 데이터 저장)
-
----
-
-## 주요 기능
-
-### AI 투자 추천
-- **동적 자산 스크리닝**: NASDAQ 100, Top 100 암호화폐 자동 수집
-- **앙상블 예측**: 3개 모델의 소프트 보팅으로 안정적인 예측
-- **기간별 분석**: 단기/중기/장기 투자 가치 점수 제공
-- **Top 10 추천**: 투자 가치 점수 기반 상위 10개 자산 추천
-
-### 포트폴리오 분석
-- 보유 자산의 수익률 분석
-- 기간별 투자 매력도 점수 비교
-- 자산별 상세 기술적 지표 제공
-
-### 자동 모델 학습
-- 206개 자산에 대한 개별 모델 자동 학습
-- 최신 시세 데이터 자동 업데이트
-- 성능 모니터링 및 보고서 생성
-
----
-
-## 프로젝트 구조
+모든 컴포넌트가 정상 작동하는지 확인:
 
 ```bash
+cd /Users/nahyeonho/pythonWorkspace/Alpha
+source venv/bin/activate
+python tests/test_system.py
+```
+
+### 2. Alpha 실행
+
+터미널에서 다음 명령어 실행:
+
+```bash
+./start_alpha.sh
+```
+
+- 서버가 백그라운드에서 시작됩니다.
+- GUI 클라이언트가 자동으로 실행됩니다.
+- GUI 종료 시 서버도 자동으로 종료됩니다.
+
+## 📁 프로젝트 구조
+
+```
 Alpha/
-├── alpha_server/              # FastAPI 백엔드 서버
-│   ├── main.py               # API 엔드포인트
-│   ├── data_handler.py       # 데이터 수집 및 저장
-│   ├── model_handler.py      # 기본 모델 학습
-│   ├── ensemble_handler.py   # 앙상블 모델 (v2.0)
-│   ├── lstm_handler.py       # LSTM 모델 (선택)
-│   └── market_features.py    # 시장 지수 특성
-├── alpha/                     # PySide6 GUI 클라이언트
-│   └── main.py
-├── models/                    # 학습된 모델 저장소
-├── apply_improvements.py      # 전체 자산 모델 학습
-├── generate_v2_report.py      # 성능 평가 스크립트
-├── backtest_strategy.py       # 백테스팅 스크립트
-├── requirements.txt
-└── .env                       # 환경 변수 (Git 제외)
+├── alpha/                      # GUI 클라이언트
+│   ├── main.py                # 클라이언트 진입점
+│   ├── core.py                # 서버 통신 로직
+│   └── gui.py                 # PySide6 GUI
+│
+├── alpha_server/              # 백엔드 서버
+│   ├── main.py               # FastAPI 서버
+│   ├── asset_screener.py     # 자산 스크리닝
+│   ├── data_handler.py       # 데이터 수집/저장
+│   ├── model_handler.py      # AI 모델 학습/예측
+│   ├── scoring_engine.py     # 투자 가치 평가
+│   ├── market_data/          # CSV 데이터 (QuestDB 미사용 시)
+│   └── models/               # 학습된 AI 모델
+│
+├── docs/                     # 문서
+│   ├── guides/              # 가이드 문서
+│   └── archive/             # 이전 리포트 및 문서
+│
+├── scripts/                  # 유틸리티 스크립트
+├── tests/                    # 시스템 테스트
+├── venv/                     # 가상환경
+├── requirements.txt          # 의존성 목록
+├── .env                      # 환경 변수
+├── start_alpha.sh           # 통합 실행 스크립트
+└── run_dev.sh               # 개발 모드 실행 스크립트
 ```
 
----
+## 🔧 데이터 저장 방식
 
-## 설치 및 실행
+Alpha는 두 가지 데이터 저장 방식을 지원합니다:
 
-### 1. 환경 설정
+### 1. QuestDB (권장)
+
+고성능 시계열 데이터베이스로 대량의 금융 데이터를 효율적으로 처리합니다.
+
+- QuestDB가 실행 중이면 자동으로 사용
+- 연결 실패 시 자동으로 CSV 모드로 전환
+
+### 2. CSV 파일 (폴백)
+
+QuestDB를 사용할 수 없을 때 자동으로 CSV 파일로 저장합니다.
+
+- 데이터는 `alpha_server/market_data/` 디렉토리에 저장
+- 별도 설정 불필요
+
+## 📊 사용 방법
+
+### GUI 사용
+
+1. **서버 상태 확인**: "서버 상태 확인" 버튼 클릭
+2. **데이터 업데이트**: "서버 데이터 업데이트 요청" 버튼 클릭 (최초 1회)
+3. **모델 학습**: "서버 모델 재학습 요청" 버튼 클릭 (최초 1회)
+4. **투자 추천 받기**: 
+   - 투자 기간 선택 (단기/중기/장기)
+   - 추천 개수 입력
+   - "추천 받기" 버튼 클릭
+
+### API 사용
+
+서버가 실행 중일 때 다음 엔드포인트를 사용할 수 있습니다:
 
 ```bash
-# 가상환경 생성 및 활성화
-python -m venv venv
-source venv/bin/activate  # macOS/Linux
-# venv\Scripts\activate   # Windows
+# 서버 상태 확인
+curl http://127.0.0.1:8000/
 
-# 의존성 설치
-pip install -r requirements.txt
+# 데이터 업데이트 (백그라운드)
+curl -X POST http://127.0.0.1:8000/update-data
+
+# 모델 재학습 (백그라운드)
+curl -X POST http://127.0.0.1:8000/update-models
+
+# 투자 추천 받기
+curl "http://127.0.0.1:8000/recommendations?horizon=medium&top_n=10"
+
+# 포트폴리오 평가
+curl -X POST http://127.0.0.1:8000/assess-portfolio \
+  -H "Content-Type: application/json" \
+  -d '{"holdings": [{"symbol": "AAPL", "quantity": 10, "purchase_price": 150.0}]}'
 ```
 
-### 2. 환경 변수 설정
+## 🔄 자동 업데이트
+
+서버는 6시간마다 자동으로 데이터를 업데이트합니다.
+- 서버 시작 시 자동 활성화
+- 백그라운드에서 실행
+- 로그에서 진행 상황 확인 가능
+
+## 🧪 테스트
+
+### 전체 시스템 테스트
 
 ```bash
-# .env.example을 복사하여 .env 생성
-cp .env.example .env
+python tests/test_system.py
+```
 
-# .env 파일 수정
+### 개별 컴포넌트 테스트
+
+```bash
+# 자산 스크리너 테스트
+python -m alpha_server.asset_screener
+
+# 데이터 핸들러 테스트
+python -m alpha_server.data_handler
+
+# 모델 핸들러 테스트
+python -m alpha_server.model_handler
+
+# 스코어링 엔진 테스트
+python -m alpha_server.scoring_engine
+```
+
+## 📈 투자 가치 점수 계산 방식
+
+### 단기 점수 (1주 이내)
+- RSI 모멘텀 (70%)
+- AI 예측 결과 (30%)
+
+### 중기 점수 (3개월 이내)
+- 이동평균 추세 (80%)
+- 단기 모멘텀 (20%)
+
+### 장기 점수 (1년 이상)
+- 연간 수익률 (60%)
+- 변동성 (40%, 낮을수록 높은 점수)
+
+## 🔐 환경 변수
+
+`.env` 파일에서 다음 설정을 변경할 수 있습니다:
+
+```bash
+# QuestDB 설정
 DB_HOST=127.0.0.1
 DB_PORT=8812
 DB_NAME=qdb
 DB_USER=admin
-DB_PASSWORD=your_password_here
+DB_PASSWORD=quest
+
+# API 키 (필요시)
+FINANCIAL_API_KEY=YOUR_API_KEY_HERE
 ```
 
-⚠️ **중요**: `.env` 파일을 절대 Git에 커밋하지 마세요!
+## 🐛 문제 해결
 
-### 3. QuestDB 실행
+### 서버가 시작되지 않을 때
 
-```bash
-# QuestDB 다운로드 및 실행
-# https://questdb.io/docs/get-started/binaries/
-./questdb.sh start
+1. 가상환경 활성화 확인:
+   ```bash
+   source venv/bin/activate
+   ```
+
+2. 의존성 재설치:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. 포트 충돌 확인:
+   ```bash
+   lsof -i :8000
+   ```
+
+### 데이터를 가져올 수 없을 때
+
+1. 인터넷 연결 확인
+2. yfinance 업데이트:
+   ```bash
+   pip install --upgrade yfinance
+   ```
+
+### GUI가 실행되지 않을 때
+
+1. PySide6 재설치:
+   ```bash
+   pip install --upgrade PySide6
+   ```
+
+2. 서버가 실행 중인지 확인
+
+## 📚 추가 문서
+
+- [서버 API 문서](alpha_server/README.md)
+- [빌드 가이드](docs/guides/BUILD_GUIDE.md)
+- [성능 추적](docs/guides/PERFORMANCE_TRACKING.md)
+- [보안 체크리스트](docs/guides/SECURITY_CHECKLIST.md)
+
+## 🎉 성공적인 실행 확인
+
+시스템이 정상 작동하면 다음과 같은 메시지를 볼 수 있습니다:
+
+```
+🎉 모든 테스트 통과! 시스템이 정상 작동합니다.
+
+다음 명령어로 Alpha를 시작할 수 있습니다:
+  ./start_alpha.sh
 ```
 
-### 4. 서버 실행
+## 📝 라이선스
 
-```bash
-# FastAPI 서버 시작
-uvicorn alpha_server.main:app --reload
-```
+이 프로젝트는 개인 사용 목적으로 제작되었습니다.
 
-서버가 `http://127.0.0.1:8000`에서 실행됩니다.
+## 🤝 기여
 
-### 5. 클라이언트 실행
-
-```bash
-# 새 터미널에서
-cd Alpha
-source venv/bin/activate
-python -m alpha.main --gui
-```
-
-### 6. 초기 데이터 및 모델 준비
-
-GUI에서:
-1. **"서버 데이터 업데이트 요청"** 클릭 (시세 데이터 다운로드)
-2. **"서버 모델 재학습 요청"** 클릭 (AI 모델 학습)
-3. **"Top 10 투자 추천 받기"** 사용 가능
-
----
-
-## 모델 성능 (Version 2.0)
-
-### 전체 성능
-- **평균 정확도**: 71.79%
-- **평균 정밀도**: 71.06%
-- **평균 재현율**: 79.87%
-- **평균 F1 점수**: 71.26%
-
-### 정확도 분포
-- **100% 정확도**: 55개 자산 (26.6%)
-- **80% 이상**: 106개 자산 (51.2%)
-- **70% 이상**: 145개 자산 (70.0%)
-
-### 상위 성능 자산
-- DASH, BNB-USD, DOGE-USD, META, GOOGL: 100% 정확도
-- 대부분의 대형 주식 및 주요 암호화폐: 80% 이상
-
-### 백테스팅 결과
-- **예상 연간 수익률**: 19.79%
-- **S&P 500 대비**: +9.79%p
-- **승률**: 71.79%
-
-자세한 내용은 `PERFORMANCE_REPORT_V2_DETAILED.md` 참조
-
----
-
-## 개선 이력
-
-### Version 2.0 (2026-02)
-- **Phase 1**: 특성 4개 → 13개 확장 (SMA, RSI, MACD, Bollinger Bands 등)
-- **Phase 2**: 앙상블 모델 도입 (RandomForest + XGBoost + LightGBM)
-- **Phase 3**: LSTM 및 시장 지수 특성 통합 (선택)
-- **성능**: 55-58% → 71.79% (+27.1% 개선)
-
-### Version 1.0
-- 기본 RandomForest 모델
-- 4개 기술적 지표
-- 평균 정확도 55-58%
-
----
-
-## 문서
-
-- `MODEL_IMPROVEMENT_PLAN.md` - 모델 개선 계획
-- `MODEL_IMPROVEMENT_RESULTS.md` - 개선 결과 상세
-- `ENSEMBLE_VS_DEEPLEARNING.md` - 앙상블 vs 딥러닝 비교
-- `BACKTEST_REPORT.md` - 백테스팅 보고서
-- `SECURITY_CHECKLIST.md` - 보안 체크리스트
-- `SECURITY_FIX_REPORT.md` - 보안 수정 내역
+버그 리포트나 기능 제안은 이슈로 등록해주세요.
