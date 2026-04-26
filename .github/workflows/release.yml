@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          {
+            echo "changelog<<EOF"
+            git log --pretty=format:"- %s (%h)" $(git describe --tags --abbrev=0 HEAD^ 2>/dev/null)..HEAD || git log --pretty=format:"- %s (%h)" -n 20
+            echo
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Alpha ${{ github.ref_name }}
+          body: |
+            ## ${{ github.ref_name }}
+
+            ${{ steps.changelog.outputs.changelog }}
+          draft: false
+          prerelease: false
