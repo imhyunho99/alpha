@@ -8,7 +8,7 @@ import threading
 import time
 import asyncio
 
-from . import audit_log, data_handler
+from . import audit_log, credentials, data_handler
 from .auth import (
     UserCreate,
     UserPublic,
@@ -20,14 +20,18 @@ from .auth import (
     require_admin,
     require_user,
 )
+from .brokers import build_broker_for_user, supported_brokers
 from .data_handler import update_all_data
 from .errors import install_handlers
 from .model_handler import update_all_models, train_model
-from .asset_screener import get_all_tickers
+from .asset_screener import get_all_tickers, get_market_for_ticker
 from .scoring_engine import calculate_scores
 from .trading_handler import broker
 from .risk_manager import RiskManager
 from .rate_limit import rate_limit
+from .strategies import executor as strategy_executor
+from .strategies import nl_parser, store as strategy_store
+from .strategies.spec import StrategySpec
 
 # 진행 상황 추적
 progress_status = {
@@ -59,8 +63,8 @@ class OrderRequest(BaseModel):
 # --- FastAPI 앱 초기화 ---
 app = FastAPI(
     title="Alpha AI 분석 서버",
-    description="동적 자산 스크리닝, AI 기반 예측, 투자 가치 스코어링을 통해 Top-N 투자 추천 및 포트폴리오 분석을 제공합니다.",
-    version="3.0.0"
+    description="동적 자산 스크리닝, AI 기반 예측, 투자 가치 스코어링, 자연어 자동매매 전략 실행을 제공합니다.",
+    version="3.1.0"
 )
 install_handlers(app)
 
@@ -196,7 +200,135 @@ def trading_risk(user: UserPublic = Depends(require_user)):
 # --- 공개 엔드포인트 ---
 @app.get("/")
 def read_root():
-    return {"message": "Alpha AI 분석 서버 v3.0에 오신 것을 환영합니다.", "status": "ok"}
+    return {
+        "message": "Alpha AI 분석 서버 v3.1에 오신 것을 환영합니다.",
+        "status": "ok",
+        "supported_brokers": supported_brokers(),
+        "supported_markets": ["us", "kr", "crypto"],
+    }
+
+
+# --- 자격증명 엔드포인트 ---
+class CredentialsPayload(BaseModel):
+    broker: str
+    fields: dict
+
+
+@app.post("/credentials", summary="거래소 API 키 등록/갱신")
+def upsert_credentials(
+    payload: CredentialsPayload, user: UserPublic = Depends(require_user)
+):
+    name = payload.broker.lower()
+    required = credentials.required_fields(name)
+    missing = [k for k in required if not payload.fields.get(k)]
+    if missing:
+        return {"error": f"{name}에 필요한 필드가 누락되었습니다: {missing}"}
+    view = credentials.store_credentials(user.username, name, payload.fields)
+    audit_log.record(
+        "credential", "upsert", actor=user.username, broker=name, fingerprint=view.get("fingerprint")
+    )
+    return view
+
+
+@app.get("/credentials", summary="등록된 거래소 목록")
+def list_credentials(user: UserPublic = Depends(require_user)):
+    return {"brokers": credentials.list_brokers(user.username)}
+
+
+@app.delete("/credentials/{broker}", summary="거래소 키 삭제")
+def remove_credentials(broker: str, user: UserPublic = Depends(require_user)):
+    ok = credentials.delete_credentials(user.username, broker)
+    audit_log.record("credential", "delete", actor=user.username, broker=broker, ok=ok)
+    return {"deleted": ok}
+
+
+@app.get("/credentials/required/{broker}", summary="해당 거래소 필요 필드 안내")
+def required_fields_for_broker(broker: str, _: UserPublic = Depends(require_user)):
+    try:
+        return {"broker": broker, "required": credentials.required_fields(broker)}
+    except KeyError:
+        return {"error": f"지원하지 않는 broker: {broker}"}
+
+
+# --- 전략 엔드포인트 ---
+class StrategyParseRequest(BaseModel):
+    text: str
+
+
+class StrategyEvaluateRequest(BaseModel):
+    strategy_id: str
+
+
+@app.post("/strategies/parse", summary="자연어 → 전략 스펙 변환 (저장하지 않음)")
+def parse_strategy(
+    payload: StrategyParseRequest,
+    user: UserPublic = Depends(require_user),
+    _: None = Depends(rate_limit("nl_parse", capacity=20, per_seconds=60)),
+):
+    creds = credentials.get_credentials(user.username, "anthropic")
+    api_key = creds.get("api_key") if creds else None
+    spec = nl_parser.parse(payload.text, anthropic_api_key=api_key)
+    return {"spec": spec.model_dump(), "source_text": payload.text}
+
+
+@app.post("/strategies", summary="전략 등록 (자연어 또는 JSON)")
+def create_strategy(
+    payload: dict, user: UserPublic = Depends(require_user)
+):
+    """payload는 다음 둘 중 하나:
+    - {"text": "RSI 30 이하면 AAPL 5주 매수"}
+    - 완전한 StrategySpec JSON
+    """
+    if "text" in payload and len(payload) == 1:
+        creds = credentials.get_credentials(user.username, "anthropic")
+        api_key = creds.get("api_key") if creds else None
+        spec = nl_parser.parse(payload["text"], anthropic_api_key=api_key)
+    else:
+        spec = StrategySpec(**payload)
+    record = strategy_store.create(user.username, spec)
+    audit_log.record(
+        "strategy", "create", actor=user.username, strategy_id=record.id, name=record.name
+    )
+    return record.model_dump()
+
+
+@app.get("/strategies", summary="내 전략 목록")
+def list_strategies(user: UserPublic = Depends(require_user)):
+    return {"strategies": [r.model_dump() for r in strategy_store.list_for_owner(user.username)]}
+
+
+@app.get("/strategies/{sid}", summary="전략 상세")
+def get_strategy(sid: str, user: UserPublic = Depends(require_user)):
+    record = strategy_store.get(user.username, sid)
+    if not record:
+        return {"error": "전략을 찾을 수 없습니다."}
+    return record.model_dump()
+
+
+@app.patch("/strategies/{sid}", summary="전략 수정 (active, dry_run, cooldown 등)")
+def update_strategy(sid: str, patch: dict, user: UserPublic = Depends(require_user)):
+    record = strategy_store.update(user.username, sid, patch)
+    if not record:
+        return {"error": "전략을 찾을 수 없습니다."}
+    audit_log.record(
+        "strategy", "update", actor=user.username, strategy_id=sid, fields=list(patch.keys())
+    )
+    return record.model_dump()
+
+
+@app.delete("/strategies/{sid}", summary="전략 삭제")
+def delete_strategy(sid: str, user: UserPublic = Depends(require_user)):
+    ok = strategy_store.delete(user.username, sid)
+    audit_log.record("strategy", "delete", actor=user.username, strategy_id=sid, ok=ok)
+    return {"deleted": ok}
+
+
+@app.post("/strategies/{sid}/evaluate", summary="전략 즉시 평가 (수동 트리거)")
+def evaluate_strategy(sid: str, user: UserPublic = Depends(require_user)):
+    record = strategy_store.get(user.username, sid)
+    if not record:
+        return {"error": "전략을 찾을 수 없습니다."}
+    return strategy_executor.evaluate_once(record)
 
 
 @app.get("/health", summary="헬스체크")
@@ -295,14 +427,16 @@ async def startup_event():
     auto_update_running = True
     auto_update_thread = threading.Thread(target=auto_update_task, daemon=True)
     auto_update_thread.start()
+    strategy_executor.start()
     audit_log.record("system", "startup")
-    print("✅ Alpha 서버 v3.0 시작 (자동 업데이트 6시간 주기)")
+    print("✅ Alpha 서버 v3.1 시작 (자동 업데이트 6h, 전략 워커 5분 주기)")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     global auto_update_running
     auto_update_running = False
+    strategy_executor.stop()
     audit_log.record("system", "shutdown")
     print("⏹️ Alpha 서버 종료")
 

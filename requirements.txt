@@ -19,6 +19,8 @@ joblib
 apscheduler
 PyJWT
 python-multipart
+cryptography
+anthropic
 
 # News & NLP dependencies
 feedparser

@@ -3,6 +3,8 @@ uvicorn[standard]==0.29.*
 pydantic==2.*
 PyJWT==2.*
 python-multipart==0.0.*
+cryptography==42.*
+anthropic==0.*
 yfinance==0.2.*
 pandas==2.*
 numpy==1.26.*

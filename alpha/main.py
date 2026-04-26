@@ -60,7 +60,7 @@ def main():
         return
     
     parser = argparse.ArgumentParser(description="Alpha: AI 기반 투자 분석 및 추천 시스템")
-    parser.add_argument("--version", action="version", version="Alpha v3.0.0")
+    parser.add_argument("--version", action="version", version="Alpha v3.1.0")
     parser.add_argument("--gui", action="store_true", help="GUI 모드로 실행합니다.")
 
     # GUI 모드가 아닐 때만 command를 필수로 하도록 처리
