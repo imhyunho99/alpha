@@ -59,18 +59,33 @@ BROKER_FIELDS = {
 
 # ---------- Login ----------
 class LoginDialog(QDialog):
+    """첫 실행 시: bootstrap 모드 → 첫 admin 계정 만들기. 그 외: 일반 로그인."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Alpha 로그인")
-        self.setMinimumWidth(360)
+        bootstrap = core.bootstrap_status().get("bootstrap_needed", False)
+        self._bootstrap = bootstrap
+
+        self.setWindowTitle("Alpha 첫 계정 생성" if bootstrap else "Alpha 로그인")
+        self.setMinimumWidth(380)
         layout = QFormLayout(self)
-        self.username = QLineEdit()
+
+        if bootstrap:
+            note = QLabel(
+                "✨ 첫 실행입니다. 사용할 admin 계정을 만들어주세요.\n"
+                "(이후엔 이 비밀번호로 로그인합니다)"
+            )
+            note.setWordWrap(True)
+            layout.addRow(note)
+
+        self.username = QLineEdit("admin" if bootstrap else "")
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.Password)
         layout.addRow("사용자명", self.username)
-        layout.addRow("비밀번호", self.password)
+        layout.addRow("비밀번호 (8자 이상)", self.password)
+
         btns = QHBoxLayout()
-        ok = QPushButton("로그인")
+        ok = QPushButton("계정 생성 + 로그인" if bootstrap else "로그인")
         cancel = QPushButton("취소")
         ok.clicked.connect(self._submit)
         cancel.clicked.connect(self.reject)
@@ -79,9 +94,18 @@ class LoginDialog(QDialog):
         layout.addRow(btns)
 
     def _submit(self):
-        result = core.login(self.username.text().strip(), self.password.text())
+        u = self.username.text().strip()
+        p = self.password.text()
+        if self._bootstrap:
+            result = core.bootstrap_first_admin(u, p)
+        else:
+            result = core.login(u, p)
         if "access_token" in result:
-            QMessageBox.information(self, "성공", "로그인되었습니다.")
+            QMessageBox.information(
+                self,
+                "완료",
+                "계정이 생성되고 로그인되었습니다." if self._bootstrap else "로그인되었습니다.",
+            )
             self.accept()
         else:
             QMessageBox.warning(self, "실패", str(result.get("error") or result))
@@ -225,22 +249,27 @@ class StrategyChatTab(QWidget):
         layout.addWidget(self.preview_box)
 
         layout.addWidget(QLabel("📋 등록된 전략"))
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["ID", "이름", "종목", "브로커", "활성", "발동수"])
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(
+            ["ID", "이름", "종목", "브로커", "활성", "모드", "발동수"]
+        )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         layout.addWidget(self.table)
 
         btn_row = QHBoxLayout()
-        refresh = QPushButton("목록 새로고침")
-        toggle = QPushButton("선택 활성/비활성 전환")
-        run_now = QPushButton("선택 즉시 평가")
-        delete_btn = QPushButton("선택 삭제")
+        refresh = QPushButton("새로고침")
+        toggle = QPushButton("활성/비활성")
+        toggle_dry = QPushButton("DRY-RUN ↔ 실거래")
+        run_now = QPushButton("즉시 평가")
+        delete_btn = QPushButton("삭제")
         refresh.clicked.connect(self._refresh)
         toggle.clicked.connect(self._toggle_active)
+        toggle_dry.clicked.connect(self._toggle_dry_run)
         run_now.clicked.connect(self._evaluate_now)
         delete_btn.clicked.connect(self._delete_selected)
         btn_row.addWidget(refresh)
         btn_row.addWidget(toggle)
+        btn_row.addWidget(toggle_dry)
         btn_row.addWidget(run_now)
         btn_row.addWidget(delete_btn)
         layout.addLayout(btn_row)
@@ -275,6 +304,14 @@ class StrategyChatTab(QWidget):
 
     def _refresh(self):
         result = core._handle_request("get", "/strategies")
+        if not isinstance(result, dict) or "error" in result:
+            QMessageBox.warning(
+                self, "조회 실패",
+                "전략 목록을 불러오지 못했습니다. 로그인 상태를 확인하세요.\n"
+                f"세부: {result}",
+            )
+            self.table.setRowCount(0)
+            return
         rows = result.get("strategies", [])
         self.table.setRowCount(len(rows))
         for i, r in enumerate(rows):
@@ -283,16 +320,38 @@ class StrategyChatTab(QWidget):
             self.table.setItem(i, 2, QTableWidgetItem(", ".join(r.get("tickers", []))))
             self.table.setItem(i, 3, QTableWidgetItem(r.get("broker", "")))
             self.table.setItem(i, 4, QTableWidgetItem("✅" if r.get("active") else "⏸"))
-            self.table.setItem(i, 5, QTableWidgetItem(str(r.get("fire_count", 0))))
+            mode = "🧪 DRY" if r.get("dry_run", True) else "🔴 REAL"
+            self.table.setItem(i, 5, QTableWidgetItem(mode))
+            self.table.setItem(i, 6, QTableWidgetItem(str(r.get("fire_count", 0))))
 
     def _toggle_active(self):
         sid = self._selected_id()
         if not sid:
             return
-        # 현재 active 값 토글
         row = self.table.currentRow()
         active = self.table.item(row, 4).text() == "✅"
         core._handle_request("patch", f"/strategies/{sid}", json={"active": not active})
+        self._refresh()
+
+    def _toggle_dry_run(self):
+        sid = self._selected_id()
+        if not sid:
+            return
+        row = self.table.currentRow()
+        is_dry = "DRY" in self.table.item(row, 5).text()
+        next_dry = not is_dry
+        if not next_dry:
+            confirm = QMessageBox.question(
+                self,
+                "⚠️ 실거래 전환 확인",
+                f"전략 {sid}를 DRY-RUN(시뮬레이션)에서 **실거래**로 전환합니다.\n"
+                "다음 트리거부터 실제 거래소 API로 주문이 들어갑니다.\n\n"
+                "거래소 API 키가 등록되어 있고, 손실 가능성을 이해하셨다면 '예'를 누르세요.",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if confirm != QMessageBox.Yes:
+                return
+        core._handle_request("patch", f"/strategies/{sid}", json={"dry_run": next_dry})
         self._refresh()
 
     def _evaluate_now(self):

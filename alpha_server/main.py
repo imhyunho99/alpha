@@ -14,7 +14,9 @@ from .auth import (
     UserPublic,
     TokenResponse,
     authenticate,
+    bootstrap_first_admin,
     ensure_default_admin,
+    is_bootstrap_needed,
     issue_token,
     register_user,
     require_admin,
@@ -70,6 +72,18 @@ install_handlers(app)
 
 
 # --- 인증 엔드포인트 ---
+@app.get("/auth/bootstrap", summary="첫 사용자 생성이 필요한지 확인 (인증 불필요)")
+def auth_bootstrap_status():
+    return {"bootstrap_needed": is_bootstrap_needed()}
+
+
+@app.post("/auth/bootstrap", response_model=TokenResponse, summary="첫 admin 계정 생성 + 즉시 로그인 (사용자가 0명일 때만)")
+def auth_bootstrap(payload: UserCreate):
+    user = bootstrap_first_admin(payload.username, payload.password)
+    audit_log.record("auth", "bootstrap_admin", actor=user.username)
+    return issue_token(user)
+
+
 @app.post("/auth/register", response_model=UserPublic, summary="사용자 등록 (admin 전용)")
 def register(payload: UserCreate, _: UserPublic = Depends(require_admin)):
     user = register_user(payload.username, payload.password, payload.role)
