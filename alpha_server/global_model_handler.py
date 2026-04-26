@@ -120,9 +120,20 @@ def build_global_dataset(tickers, target_days=7):
 
 from sklearn.ensemble import VotingClassifier, RandomForestClassifier
 from sklearn.metrics import accuracy_score
-import xgboost as xgb
-import lightgbm as lgb
 from sklearn.preprocessing import OrdinalEncoder
+
+# 선택적 의존성: xgboost/lightgbm 네이티브 라이브러리가 번들되지 않은 환경(예: PyInstaller dist)에서도
+# 서버 부팅 자체는 가능하도록 lazy + 안전 처리.
+try:
+    import xgboost as xgb
+except Exception as _xgb_err:  # pragma: no cover
+    xgb = None
+    print(f"⚠️ xgboost 사용 불가 (앙상블 학습 시 폴백): {_xgb_err}")
+try:
+    import lightgbm as lgb
+except Exception as _lgb_err:  # pragma: no cover
+    lgb = None
+    print(f"⚠️ lightgbm 사용 불가 (앙상블 학습 시 폴백): {_lgb_err}")
 
 def train_global_model(horizon_name="short", target_days=7):
     """
@@ -182,19 +193,21 @@ def train_global_model(horizon_name="short", target_days=7):
     )
     estimators.append(('rf', rf))
     
-    # XGBoost (카테고리 피처 명시적 지원 가능하지만 여기선 숫자 인코딩된 것 사용)
-    xgb_model = xgb.XGBClassifier(
-        n_estimators=100, max_depth=6, learning_rate=0.05, random_state=42, n_jobs=-1,
-        eval_metric='logloss'
-    )
-    estimators.append(('xgb', xgb_model))
-    
-    # LightGBM
-    lgbm_model = lgb.LGBMClassifier(
-        n_estimators=100, max_depth=6, learning_rate=0.05, random_state=42, n_jobs=-1,
-        verbose=-1
-    )
-    estimators.append(('lgbm', lgbm_model))
+    # XGBoost (선택적)
+    if xgb is not None:
+        xgb_model = xgb.XGBClassifier(
+            n_estimators=100, max_depth=6, learning_rate=0.05, random_state=42, n_jobs=-1,
+            eval_metric='logloss'
+        )
+        estimators.append(('xgb', xgb_model))
+
+    # LightGBM (선택적)
+    if lgb is not None:
+        lgbm_model = lgb.LGBMClassifier(
+            n_estimators=100, max_depth=6, learning_rate=0.05, random_state=42, n_jobs=-1,
+            verbose=-1
+        )
+        estimators.append(('lgbm', lgbm_model))
     
     # 앙상블 학습
     print("모델 학습 중... (시간이 다소 소요될 수 있습니다)")

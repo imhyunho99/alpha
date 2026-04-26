@@ -1,14 +1,15 @@
 import sys
 import json
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTextEdit, QFileDialog, QMessageBox,
-    QGroupBox, QStatusBar, QComboBox, QProgressBar
+    QGroupBox, QStatusBar, QComboBox, QProgressBar, QDialog
 )
 from PySide6.QtCore import Slot, QThread, Signal, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QAction
 
 from alpha import core
+from alpha.strategy_widgets import ApiKeyDialog, LoginDialog, StrategyChatTab
 
 class WorkerThread(QThread):
     """백그라운드 작업을 처리하는 스레드"""
@@ -31,27 +32,62 @@ class WorkerThread(QThread):
 class AlphaGUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Alpha AI 투자 에이전트 (클라이언트 v2.0)")
-        self.setGeometry(100, 100, 900, 700)
+        self.setWindowTitle("Alpha AI 투자 에이전트 (v3.1)")
+        self.setGeometry(100, 100, 1100, 800)
 
         self.portfolio_path = None
         self.worker_thread = None
-        
+
         # 진행 상황 체크 타이머
         self.progress_timer = QTimer()
         self.progress_timer.timeout.connect(self.check_progress)
         self.progress_timer.setInterval(2000)  # 2초마다 체크
 
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        
-        main_layout = QVBoxLayout(central_widget)
+        # 탭 구조: 분석 / 전략 채팅 / 자격증명
+        from PySide6.QtWidgets import QTabWidget
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
 
+        # 탭 1: 기존 분석 화면
+        analysis_widget = QWidget()
+        main_layout = QVBoxLayout(analysis_widget)
         self.create_control_box(main_layout)
         self.create_analytics_box(main_layout)
         self.create_progress_box(main_layout)
         self.create_result_box(main_layout)
+        self.tabs.addTab(analysis_widget, "📈 분석/추천")
+
+        # 탭 2: 전략 채팅
+        self.strategy_tab = StrategyChatTab()
+        self.tabs.addTab(self.strategy_tab, "💬 전략 채팅")
+
         self.create_status_bar()
+        self._build_menu()
+
+    def _build_menu(self):
+        menu = self.menuBar()
+        account = menu.addMenu("계정")
+        login_act = QAction("로그인", self)
+        login_act.triggered.connect(self._open_login)
+        logout_act = QAction("로그아웃", self)
+        logout_act.triggered.connect(self._logout)
+        keys_act = QAction("거래소 API 키 관리…", self)
+        keys_act.triggered.connect(self._open_keys)
+        account.addAction(login_act)
+        account.addAction(logout_act)
+        account.addSeparator()
+        account.addAction(keys_act)
+
+    def _open_login(self):
+        if LoginDialog(self).exec() == QDialog.Accepted:
+            self.statusBar().showMessage("로그인됨", 3000)
+
+    def _logout(self):
+        core.logout()
+        self.statusBar().showMessage("로그아웃됨", 3000)
+
+    def _open_keys(self):
+        ApiKeyDialog(self).exec()
     
     def create_progress_box(self, main_layout):
         """진행 상황 표시 박스"""
