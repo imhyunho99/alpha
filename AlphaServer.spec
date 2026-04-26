@@ -10,7 +10,8 @@ a = Analysis(
         ('alpha_server/*.py', 'alpha_server'),
         ('alpha_server/brokers/*.py', 'alpha_server/brokers'),
         ('alpha_server/strategies/*.py', 'alpha_server/strategies'),
-        ('alpha_server/models', 'alpha_server/models'),
+        # alpha_server/models 는 사용자가 훈련 후 생성 (런타임 ~/AlphaModels에 저장).
+        # 빌드 시 폴더가 없어 PyInstaller가 실패하던 문제 해결.
     ],
     hiddenimports=[
         # web framework
