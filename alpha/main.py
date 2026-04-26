@@ -1,62 +1,36 @@
 import argparse
 import sys
-import subprocess
-import time
-import os
 from alpha import core
 from alpha import gui
+from alpha.server_launcher import ensure_server_running
 
-def start_server():
-    """서버를 백그라운드에서 실행"""
-    try:
-        import sys
-        # PyInstaller로 패키징된 경우
-        if getattr(sys, 'frozen', False):
-            base_path = sys._MEIPASS
-            # 서버 모듈 경로 추가
-            sys.path.insert(0, base_path)
-        else:
-            base_path = os.path.dirname(__file__)
-        
-        # 서버를 별도 프로세스가 아닌 스레드로 실행
-        import threading
-        import uvicorn
-        
-        def run_server():
-            try:
-                # 로그 파일 생성
-                log_file = os.path.expanduser("~/alpha_server.log")
-                with open(log_file, 'w') as f:
-                    f.write(f"서버 시작 시도...\n")
-                    f.write(f"base_path: {base_path}\n")
-                    f.write(f"sys.path: {sys.path}\n")
-                
-                uvicorn.run("alpha_server.main:app", host="127.0.0.1", port=8000, log_level="info")
-            except Exception as e:
-                log_file = os.path.expanduser("~/alpha_server_error.log")
-                with open(log_file, 'w') as f:
-                    import traceback
-                    f.write(f"서버 실행 중 오류: {e}\n")
-                    f.write(traceback.format_exc())
-        
-        server_thread = threading.Thread(target=run_server, daemon=True)
-        server_thread.start()
-        time.sleep(5)  # 서버 시작 대기 시간 증가
-        return server_thread
-    except Exception as e:
-        print(f"서버 시작 실패: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+
+def _bootstrap_server_then_gui() -> None:
+    """서버를 (필요하면) 띄우고 GUI를 시작한다."""
+    ok, message = ensure_server_running()
+    if not ok:
+        # GUI를 띄워서 사용자에게 메시지 보여주기 — 그래도 GUI는 일단 시작
+        print(f"⚠️ 서버 자동 시작 실패: {message}")
+        try:
+            from PySide6.QtWidgets import QApplication, QMessageBox
+            app = QApplication.instance() or QApplication(sys.argv)
+            QMessageBox.warning(
+                None,
+                "Alpha 서버를 찾을 수 없습니다",
+                f"{message}\n\nGUI는 띄우지만 서버 연결이 안 되면 모든 기능이 동작하지 않습니다.\n"
+                "AlphaServer를 수동으로 실행한 뒤 다시 시도해주세요.",
+            )
+        except Exception:
+            pass
+    else:
+        print(f"✅ {message}")
+    gui.start_gui()
+
 
 def main():
     # 인자 없이 실행되면 GUI 모드로 실행
     if len(sys.argv) == 1:
-        server_thread = start_server()
-        try:
-            gui.start_gui()
-        finally:
-            pass  # daemon 스레드는 자동 종료
+        _bootstrap_server_then_gui()
         return
     
     parser = argparse.ArgumentParser(description="Alpha: AI 기반 투자 분석 및 추천 시스템")
@@ -85,11 +59,7 @@ def main():
     args = parser.parse_args()
 
     if args.gui:
-        server_thread = start_server()
-        try:
-            gui.start_gui()
-        finally:
-            pass  # daemon 스레드는 자동 종료
+        _bootstrap_server_then_gui()
     else:
         print("=== Alpha AI 투자 에이전트 (CLI) ===")
         
