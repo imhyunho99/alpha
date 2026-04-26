@@ -78,6 +78,41 @@ def login(username: str, password: str) -> dict:
         return {"error": f"로그인 실패: {e}"}
 
 
+def bootstrap_status() -> dict:
+    """첫 사용자 생성이 필요한지 서버에 묻는다 (인증 불필요)."""
+    return _handle_request("get", "/auth/bootstrap")
+
+
+def bootstrap_first_admin(username: str, password: str) -> dict:
+    """첫 admin 계정 생성 + 즉시 토큰 저장."""
+    try:
+        response = requests.post(
+            f"{BASE_URL}/auth/bootstrap",
+            json={"username": username, "password": password},
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if "access_token" in payload:
+            save_token(payload["access_token"])
+        return payload
+    except requests.exceptions.HTTPError as e:
+        try:
+            return {"error": e.response.json()}
+        except Exception:
+            return {"error": f"HTTP {e.response.status_code}"}
+    except requests.exceptions.RequestException as e:
+        return {"error": f"부트스트랩 실패: {e}"}
+
+
+def server_health() -> dict:
+    return _handle_request("get", "/health")
+
+
+def is_logged_in() -> bool:
+    return _load_token() is not None
+
+
 def logout() -> dict:
     clear_token()
     return {"message": "로그아웃되었습니다."}

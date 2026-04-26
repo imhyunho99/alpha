@@ -64,6 +64,41 @@ class AlphaGUI(QMainWindow):
         self.create_status_bar()
         self._build_menu()
 
+        # 첫 실행 자동 부트스트랩 / 로그인
+        QTimer.singleShot(500, self._auto_onboard)
+        # 서버 헬스 5초 주기 표시
+        self.health_timer = QTimer()
+        self.health_timer.timeout.connect(self._update_health_status)
+        self.health_timer.setInterval(5000)
+        self.health_timer.start()
+        self._update_health_status()
+
+    def _auto_onboard(self):
+        """첫 실행이거나 로그인 안 된 상태면 로그인 다이얼로그를 자동으로 띄운다."""
+        try:
+            health = core.server_health()
+            if "error" in health:
+                self.statusBar().showMessage("⚠️ 서버에 연결할 수 없습니다. (자동 재시도 중)")
+                return
+        except Exception:
+            self.statusBar().showMessage("⚠️ 서버 연결 확인 실패.")
+            return
+
+        if not core.is_logged_in():
+            LoginDialog(self).exec()
+
+    def _update_health_status(self):
+        result = core.server_health()
+        if "error" in result:
+            self.statusBar().showMessage("🔴 서버 오프라인")
+        else:
+            who = ""
+            if core.is_logged_in():
+                me = core._handle_request("get", "/auth/me")
+                if isinstance(me, dict) and "username" in me:
+                    who = f" | 👤 {me['username']} ({me.get('role','user')})"
+            self.statusBar().showMessage(f"🟢 서버 연결됨{who}")
+
     def _build_menu(self):
         menu = self.menuBar()
         account = menu.addMenu("계정")

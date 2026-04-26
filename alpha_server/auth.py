@@ -181,3 +181,29 @@ def ensure_default_admin() -> None:
     users["admin"] = {"password": _hash_password(pw), "role": "admin"}
     _save_users(users)
     print("✅ 기본 admin 계정이 생성되었습니다 (ALPHA_DEFAULT_ADMIN_PASSWORD 사용).")
+
+
+def is_bootstrap_needed() -> bool:
+    """사용자가 한 명도 없으면 True (첫 실행 상태)."""
+    return not _load_users()
+
+
+def bootstrap_first_admin(username: str, password: str) -> UserPublic:
+    """첫 admin 계정을 인증 없이 생성. 사용자가 이미 있으면 거부.
+
+    GUI에서 첫 실행 시 호출하기 위한 엔드포인트와 짝.
+    """
+    if not is_bootstrap_needed():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="이미 사용자가 존재합니다. /auth/login을 사용하세요.",
+        )
+    if len(username) < 3 or len(password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="username은 3자 이상, password는 8자 이상이어야 합니다.",
+        )
+    users = _load_users()
+    users[username] = {"password": _hash_password(password), "role": "admin"}
+    _save_users(users)
+    return UserPublic(username=username, role="admin")

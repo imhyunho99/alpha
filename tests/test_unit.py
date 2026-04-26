@@ -102,6 +102,21 @@ def test_auth_register_rejects_weak_input(monkeypatch, tmp_path):
         auth.register_user("alice", "short")  # password too short
 
 
+def test_auth_bootstrap_first_admin(monkeypatch, tmp_path):
+    _set_isolated_home(monkeypatch, tmp_path)
+    from importlib import reload
+    from alpha_server import auth
+    reload(auth)
+
+    assert auth.is_bootstrap_needed() is True
+    user = auth.bootstrap_first_admin("nahyun", "longpassword")
+    assert user.username == "nahyun" and user.role == "admin"
+    assert auth.is_bootstrap_needed() is False
+    # 한 번 만들어진 후 재시도하면 거부
+    with pytest.raises(Exception):
+        auth.bootstrap_first_admin("alice", "anotherone123")
+
+
 # ---------- rate limiter ----------
 def test_token_bucket_allows_then_throttles():
     from alpha_server.rate_limit import TokenBucket
