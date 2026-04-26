@@ -1,14 +1,20 @@
-# Alpha - AI 기반 투자 분석 시스템
+# Alpha - AI 기반 투자 분석 시스템 (v3.0)
 
 Alpha는 AI 기반의 투자 분석 및 추천 시스템입니다. 동적 자산 스크리닝, 머신러닝 예측, 투자 가치 스코어링을 통해 최적의 투자 기회를 제공합니다.
 
 ## 🎯 주요 기능
 
 - **동적 자산 스크리닝**: NASDAQ 100, 암호화폐 상위 100개 자동 수집
-- **AI 예측 모델**: RandomForest 기반 가격 방향 예측
+- **AI 예측 모델**: RandomForest + XGBoost + LightGBM 앙상블, FinBERT 뉴스 분석, LSTM 딥러닝
 - **투자 가치 스코어링**: 단기/중기/장기 관점별 투자 점수 산출
 - **포트폴리오 분석**: 보유 자산의 성과 및 투자 가치 평가
 - **GUI 클라이언트**: 직관적인 PySide6 기반 사용자 인터페이스
+- **🆕 JWT 인증 / RBAC**: admin/user 역할 분리, 토큰 기반 보호
+- **🆕 브로커 어댑터**: MockBroker / AlpacaBroker 플러그형 구조
+- **🆕 위험 관리**: 포지션 사이징, stop-loss/take-profit, 일일 한도
+- **🆕 감사 로그**: 해시 체인으로 위변조 탐지 가능한 JSONL 로그
+- **🆕 Rate Limiting + 표준 에러 응답**: 토큰버킷 기반, request-id 추적
+- **🆕 Docker Compose / GitHub Actions CI**: 원클릭 기동 + 자동 빌드
 
 ## 📋 시스템 요구사항
 

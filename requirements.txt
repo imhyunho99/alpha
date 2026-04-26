@@ -17,6 +17,8 @@ lxml
 psycopg2-binary
 joblib
 apscheduler
+PyJWT
+python-multipart
 
 # News & NLP dependencies
 feedparser
