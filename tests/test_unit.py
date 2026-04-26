@@ -246,3 +246,36 @@ def test_analysis_overlap():
     holdings = [{"symbol": "aapl"}, {"symbol": "TSLA"}]
     recs = {"recommendations": [{"symbol": "AAPL"}, {"symbol": "GOOG"}]}
     assert analysis.overlap_with_holdings(holdings, recs) == ["AAPL"]
+
+
+def test_server_launcher_detects_running_server(monkeypatch):
+    """is_server_up()이 mock된 health 응답을 정확히 분류하는지."""
+    from alpha import server_launcher
+
+    class _OkResp:
+        status_code = 200
+
+    class _BadResp:
+        status_code = 500
+
+    monkeypatch.setattr(server_launcher.requests, "get", lambda *a, **k: _OkResp())
+    assert server_launcher.is_server_up() is True
+
+    monkeypatch.setattr(server_launcher.requests, "get", lambda *a, **k: _BadResp())
+    assert server_launcher.is_server_up() is False
+
+    def _raise(*a, **k):
+        raise server_launcher.requests.RequestException("nope")
+
+    monkeypatch.setattr(server_launcher.requests, "get", _raise)
+    assert server_launcher.is_server_up() is False
+
+
+def test_server_launcher_dev_mode_uses_uvicorn(monkeypatch):
+    """frozen이 아닐 때 ensure_server_running은 dev 스레드 경로로 가는지."""
+    from alpha import server_launcher
+
+    monkeypatch.setattr(server_launcher.sys, "frozen", False, raising=False)
+    monkeypatch.setattr(server_launcher, "is_server_up", lambda: True)
+    ok, msg = server_launcher.ensure_server_running()
+    assert ok and "이미 실행 중" in msg
