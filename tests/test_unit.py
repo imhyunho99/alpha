@@ -279,3 +279,36 @@ def test_server_launcher_dev_mode_uses_uvicorn(monkeypatch):
     monkeypatch.setattr(server_launcher, "is_server_up", lambda: True)
     ok, msg = server_launcher.ensure_server_running()
     assert ok and "이미 실행 중" in msg
+
+
+def test_server_launcher_prefers_embedded_path(monkeypatch, tmp_path):
+    """frozen .app 환경에서 임베드된 AlphaServer를 시스템 경로보다 먼저 발견해야 한다.
+
+    PyInstaller는 macOS .app 빌드 시 datas를 Contents/Frameworks/ 에 풀어놓는다.
+    Contents/MacOS/AlphaClient (실행파일) → Contents/Frameworks/AlphaServer/AlphaServer.
+    """
+    from alpha import server_launcher
+
+    # AlphaClient.app/Contents/{MacOS,Frameworks} 구조 흉내
+    contents_dir = tmp_path / "AlphaClient.app" / "Contents"
+    macos_dir = contents_dir / "MacOS"
+    macos_dir.mkdir(parents=True)
+    fake_client = macos_dir / "AlphaClient"
+    fake_client.write_text("#!/bin/sh\n")
+    fake_client.chmod(0o755)
+
+    frameworks_server_dir = contents_dir / "Frameworks" / "AlphaServer"
+    frameworks_server_dir.mkdir(parents=True)
+    embedded_server = frameworks_server_dir / "AlphaServer"
+    embedded_server.write_text("#!/bin/sh\necho ok\n")
+    embedded_server.chmod(0o755)
+
+    monkeypatch.setattr(server_launcher.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(server_launcher.sys, "executable", str(fake_client))
+    # _MEIPASS는 onefile 모드에서만 의미가 있으므로 .app 케이스에서는 없는 게 맞다.
+    monkeypatch.delattr(server_launcher.sys, "_MEIPASS", raising=False)
+
+    paths = server_launcher._candidate_server_paths()
+    assert paths, "임베드된 AlphaServer 경로를 하나 이상 발견해야 한다"
+    # 첫 번째 후보가 임베드된 위치여야 한다 (시스템 경로보다 우선)
+    assert paths[0] == embedded_server.resolve()
