@@ -1,3 +1,9 @@
+> 🇬🇧 **English summary** — An AI investment advisor that tracks 100+ technical indicators for NASDAQ & crypto into a time-series database (QuestDB) and assists decisions with an ensemble ML pipeline (scikit-learn / XGBoost / LightGBM), visualized in a PySide6 desktop dashboard.
+>
+> 🇰🇷 한국어 상세 설명은 아래에 있습니다.
+
+---
+
 # Alpha - AI 기반 투자 분석 시스템 (v3.0)
 
 Alpha는 AI 기반의 투자 분석 및 추천 시스템입니다. 동적 자산 스크리닝, 머신러닝 예측, 투자 가치 스코어링을 통해 최적의 투자 기회를 제공합니다.
