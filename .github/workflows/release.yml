@@ -32,19 +32,22 @@ jobs:
 
       - name: Stage Windows artifacts
         shell: pwsh
+        # AlphaServer는 AlphaClient.spec이 dist/AlphaServer/ 를 데이터로 임베드하므로
+        # 결과 .exe / 폴더 안에 이미 포함되어 있다. 별도로 복사하지 않는다.
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v")
           New-Item -ItemType Directory -Force -Path "dist/win-stage"
-          Copy-Item -Recurse "dist/AlphaServer" "dist/win-stage/AlphaServer"
           if (Test-Path "dist/AlphaClient") {
             Copy-Item -Recurse "dist/AlphaClient" "dist/win-stage/AlphaClient"
           } elseif (Test-Path "dist/AlphaClient.exe") {
             Copy-Item "dist/AlphaClient.exe" "dist/win-stage/AlphaClient.exe"
           }
           Compress-Archive -Path "dist/win-stage/*" -DestinationPath "dist/Alpha-$version-Windows.zip"
-          # 단일 .exe도 시도
+          # 단일 .exe도 시도 (onefile 빌드인 경우 서버까지 임베드된 단일 실행파일)
           if (Test-Path "dist/AlphaClient/AlphaClient.exe") {
             Copy-Item "dist/AlphaClient/AlphaClient.exe" "dist/AlphaClient-$version.exe"
+          } elseif (Test-Path "dist/AlphaClient.exe") {
+            Copy-Item "dist/AlphaClient.exe" "dist/AlphaClient-$version.exe"
           }
 
       - name: Upload Windows artifacts

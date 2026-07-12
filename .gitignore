@@ -28,10 +28,14 @@ models/*.h5
 # Data files
 *.csv
 *.json
+!.claude/settings.json
 questdb_data/
 data/
 *.db
 *.sqlite
+
+# Claude Code — local-only overrides
+.claude/settings.local.json
 
 # Logs
 *.log

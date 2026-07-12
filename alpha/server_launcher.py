@@ -3,7 +3,10 @@
 찾는 순서:
   1) 이미 8000번 포트에 서버가 떠 있으면 그대로 사용
   2) PyInstaller로 빌드된 환경: AlphaServer 바이너리 탐색
-     - 클라이언트 .app 옆 (`<...>/AlphaServer/AlphaServer`)
+     - 클라이언트 실행파일 바로 옆에 임베드된 AlphaServer/AlphaServer
+       (.app 번들이면 Contents/MacOS/AlphaServer/AlphaServer)
+     - PyInstaller onefile _MEIPASS 안의 AlphaServer/AlphaServer
+     - 클라이언트 .app 형제 디렉터리 (AlphaServer/)
      - /Applications/AlphaServer/AlphaServer
      - ~/Applications/AlphaServer/AlphaServer
      - PATH 상의 'AlphaServer'
@@ -40,17 +43,41 @@ def _candidate_server_paths() -> list[Path]:
 
     # 클라이언트 .app 옆 (DMG 설치 후 같은 디렉터리에 둔 경우)
     if getattr(sys, "frozen", False):
-        # macOS .app 구조: /Applications/AlphaClient.app/Contents/MacOS/AlphaClient
-        # → AlphaServer는 형제 디렉터리: /Applications/AlphaServer/AlphaServer
         executable = Path(sys.executable)
-        # .app 외부로 거슬러 올라가기
-        for ancestor in [executable.parent, executable.parent.parent, executable.parent.parent.parent]:
-            candidates.append(ancestor.parent / "AlphaServer" / "AlphaServer")
-            candidates.append(ancestor.parent / "AlphaServer.exe")
-        # _MEIPASS 안에 번들된 경우
+
+        # 1) 임베드된 위치 — AlphaClient.spec이 dist/AlphaServer/를 데이터로
+        #    포함시키면 PyInstaller가 풀어놓는 위치들.
+        #
+        #    macOS .app 번들 (BUNDLE() 결과):
+        #      <...>/AlphaClient.app/Contents/MacOS/AlphaClient (실행파일)
+        #      <...>/AlphaClient.app/Contents/Frameworks/AlphaServer/AlphaServer
+        #      <...>/AlphaClient.app/Contents/Resources/AlphaServer/AlphaServer
+        #    PyInstaller는 둘 다 만들고 보통 hardlink/symlink로 묶지만, 안전하게
+        #    실제 실행파일이 있는 쪽을 우선한다 (Frameworks가 dyld 친화적).
+        #
+        #    Windows / Linux onedir:
+        #      <...>/AlphaClient/AlphaClient.exe
+        #      <...>/AlphaClient/AlphaServer/AlphaServer.exe
+        if executable.parent.name == "MacOS" and executable.parent.parent.name == "Contents":
+            contents_dir = executable.parent.parent
+            candidates.append(contents_dir / "Frameworks" / "AlphaServer" / "AlphaServer")
+            candidates.append(contents_dir / "Resources" / "AlphaServer" / "AlphaServer")
+        # 같은 디렉터리 (Windows/Linux onedir, 또는 macOS 비-bundle 빌드)
+        candidates.append(executable.parent / "AlphaServer" / "AlphaServer")
+        candidates.append(executable.parent / "AlphaServer" / "AlphaServer.exe")
+
+        # 2) PyInstaller onefile은 _MEIPASS에 datas를 풀어놓는다.
         meipass = getattr(sys, "_MEIPASS", None)
         if meipass:
             candidates.append(Path(meipass) / "AlphaServer" / "AlphaServer")
+            candidates.append(Path(meipass) / "AlphaServer" / "AlphaServer.exe")
+
+        # 3) 형제 디렉터리 폴백 — 사용자가 AlphaServer 폴더를 .app 옆에 둔 경우.
+        #    macOS .app 구조: /Applications/AlphaClient.app/Contents/MacOS/AlphaClient
+        #    → /Applications/AlphaServer/AlphaServer
+        for ancestor in [executable.parent, executable.parent.parent, executable.parent.parent.parent]:
+            candidates.append(ancestor.parent / "AlphaServer" / "AlphaServer")
+            candidates.append(ancestor.parent / "AlphaServer.exe")
 
     # 시스템 표준 위치
     candidates.extend([
