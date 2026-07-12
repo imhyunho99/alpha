@@ -1,6 +1,4 @@
-> 🇬🇧 **English summary** — An AI investment advisor that tracks 100+ technical indicators for NASDAQ & crypto into a time-series database (QuestDB) and assists decisions with an ensemble ML pipeline (scikit-learn / XGBoost / LightGBM), visualized in a PySide6 desktop dashboard.
->
-> 🇰🇷 한국어 상세 설명은 아래에 있습니다.
+> An AI investment advisor that tracks 100+ technical indicators for NASDAQ and crypto into a time-series database (QuestDB) and assists decisions with an ensemble ML pipeline (scikit-learn / XGBoost / LightGBM), shown in a PySide6 desktop dashboard.
 
 ---
 
