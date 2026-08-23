@@ -453,3 +453,34 @@ def test_live_prices_falls_back_when_batch_returns_nothing(monkeypatch):
     monkeypatch.setattr(yf, "Ticker", _T)
     src = LivePrices(rate_provider=lambda: 1.0)
     assert src.get_many(["A"], datetime.now(timezone.utc)) == {"A": 7.0}
+
+
+def test_update_all_data_uses_batch_download(monkeypatch, tmp_path):
+    """907종목을 개별 호출하면 자동 운용 루프가 네트워크에서 굶는다."""
+    import pandas as pd
+
+    from alpha_server import data_handler
+
+    monkeypatch.setattr(data_handler, "CSV_DIR", str(tmp_path))
+    monkeypatch.setattr(data_handler, "USE_QUESTDB", False)
+    monkeypatch.setattr(data_handler, "get_all_tickers", lambda: ["A", "B", "C"])
+
+    individual = []
+    monkeypatch.setattr(
+        data_handler, "download_ticker_data",
+        lambda t, **k: individual.append(t) or pd.DataFrame(),
+    )
+
+    batched = []
+
+    def fake_many(tickers, **kwargs):
+        batched.append(list(tickers))
+        idx = pd.DatetimeIndex(["2026-08-23"])
+        return {t: pd.DataFrame({"Close": [1.0]}, index=idx) for t in tickers}
+
+    monkeypatch.setattr(data_handler, "download_many", fake_many)
+
+    data_handler.update_all_data()
+
+    assert batched == [["A", "B", "C"]]
+    assert individual == [], "개별 다운로드로 되돌아갔습니다"

@@ -45,6 +45,9 @@ progress_status = {
 auto_update_thread = None
 auto_update_running = False
 
+# 기동 후 첫 데이터 업데이트까지 기다리는 시간
+AUTO_UPDATE_STARTUP_DELAY_SEC = 180
+
 # 위험 관리자 (브로커와 1:1)
 risk_manager = RiskManager(broker=broker)
 
@@ -428,6 +431,13 @@ def update_all_models_with_progress():
 
 def auto_update_task():
     global auto_update_running
+    # 기동 직후 곧바로 907종목을 받으면 자동 운용 루프가 첫 사이클을 못 돈다.
+    # 재시작이 잦은 개발 중에는 특히 그렇다. 조금 늦춰서 루프가 먼저 자리잡게 한다.
+    for _ in range(AUTO_UPDATE_STARTUP_DELAY_SEC // 5):
+        if not auto_update_running:
+            return
+        time.sleep(5)
+
     while auto_update_running:
         try:
             print(f"[{datetime.datetime.now()}] 자동 데이터 업데이트 시작...")

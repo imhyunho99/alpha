@@ -285,12 +285,14 @@ def update_all_data():
             USE_QUESTDB = False
     
     if not USE_QUESTDB:
-        for ticker in tickers:
-            data = download_ticker_data(ticker, period="2y")
-            if data is not None:
+        # 종목당 개별 호출이면 907종목이 30분 넘게 네트워크를 독점한다. 그동안
+        # 자동 운용 루프의 시세 조회가 뒤에 줄을 서서 한 사이클도 못 끝낸다.
+        frames = download_many(tickers, period="2y")
+        for ticker, data in frames.items():
+            if data is not None and not data.empty:
                 save_to_csv(ticker, data)
                 success_count += 1
-    
+
     print(f"--- 총 {success_count}/{len(tickers)}개 자산 데이터 업데이트 완료 ---")
 
 def download_many(tickers, period="5y", interval="1d", chunk_size=100):
