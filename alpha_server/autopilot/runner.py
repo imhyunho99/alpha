@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import threading
-import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from . import store, universe
 from .account import PaperAccount
 from .clock import BacktestClock, LiveClock
 from .engine import step
@@ -16,8 +16,12 @@ from .temperature import profile_for
 LIVE_INTERVAL_SEC = 300
 LIVE_UNIVERSE_CAP = 150
 
-_live_thread: threading.Thread | None = None
-_live_running = False
+# 한 사용자가 온도가 다른 계좌를 여러 개 굴린다. 루프는 (username, portfolio) 단위다.
+LiveKey = tuple[str, str]
+
+_live_threads: dict[LiveKey, threading.Thread] = {}
+_live_stops: dict[LiveKey, threading.Event] = {}
+_live_lock = threading.Lock()
 
 
 @dataclass
@@ -100,59 +104,95 @@ def run_backtest(
     return result
 
 
-def _live_loop(username: str) -> None:
-    from . import store, universe
+def _load_live_signals():
+    """실시간 신호 함수 두 개. import가 무거워서 호출 시점에 끌어온다."""
     from ..global_model_predictor import predict_proba_with_global_model
     from ..scoring_engine import calculate_scores
-
-    global _live_running
 
     def score_fn(ticker: str, horizon: str):
         scores = calculate_scores(ticker)
         return None if not scores else scores.get(horizon)
 
-    while _live_running:
-        try:
-            cfg = store.load_config(username)
-            if not cfg.get("active"):
-                time.sleep(LIVE_INTERVAL_SEC)
-                continue
-
-            profile = profile_for(int(cfg["temperature"]))
-            # 티어를 가로질러 상한만큼만 본다. 온도 10의 전체 유니버스(약 900종목)를
-            # 5분마다 전부 채점하면 한 사이클이 주기 안에 끝나지 않는다.
-            tickers = universe.sample_across_tiers(profile.universe_tiers, LIVE_UNIVERSE_CAP)
-            account, last_rebalance = store.load_account(username)
-            if account is None:
-                account = PaperAccount(cash=float(cfg["capital"]))
-
-            account.accrue_interest(days=LIVE_INTERVAL_SEC / 86400.0)
-            prices = LivePrices()
-            outcome = step(
-                account=account, profile=profile,
-                tickers=tickers,
-                prices=prices, clock=LiveClock(), journal=Journal(actor=username),
-                prob_fn=predict_proba_with_global_model, score_fn=score_fn,
-                horizon=cfg.get("horizon", "medium"), last_rebalance=last_rebalance,
-            )
-            if outcome.fills and outcome.skipped is None:
-                last_rebalance = outcome.at
-            store.save_account(username, account, last_rebalance)
-        except Exception as exc:
-            print(f"autopilot 실시간 루프 오류: {exc}")
-
-        time.sleep(LIVE_INTERVAL_SEC)
+    return predict_proba_with_global_model, score_fn
 
 
-def start_live(username: str) -> None:
-    global _live_thread, _live_running
-    if _live_thread and _live_thread.is_alive():
+def _live_once(username: str, portfolio: str = "default") -> None:
+    """해당 포트폴리오 계좌 하나를 한 스텝 굴린다. 다른 계좌는 건드리지 않는다."""
+    cfg = store.load_config(username, portfolio)
+    if not cfg.get("active"):
         return
-    _live_running = True
-    _live_thread = threading.Thread(target=_live_loop, args=(username,), daemon=True)
-    _live_thread.start()
+
+    profile = profile_for(int(cfg["temperature"]))
+    # 티어를 가로질러 상한만큼만 본다. 온도 10의 전체 유니버스(약 900종목)를
+    # 5분마다 전부 채점하면 한 사이클이 주기 안에 끝나지 않는다.
+    tickers = universe.sample_across_tiers(profile.universe_tiers, LIVE_UNIVERSE_CAP)
+    account, last_rebalance = store.load_account(username, portfolio)
+    if account is None:
+        account = PaperAccount(cash=float(cfg["capital"]))
+
+    account.accrue_interest(days=LIVE_INTERVAL_SEC / 86400.0)
+    prob_fn, score_fn = _load_live_signals()
+    outcome = step(
+        account=account, profile=profile, tickers=tickers,
+        prices=LivePrices(), clock=LiveClock(),
+        journal=Journal(actor=f"{username}/{portfolio}"),
+        prob_fn=prob_fn, score_fn=score_fn,
+        horizon=cfg.get("horizon", "medium"), last_rebalance=last_rebalance,
+    )
+    if outcome.fills and outcome.skipped is None:
+        last_rebalance = outcome.at
+    store.save_account(username, account, last_rebalance, portfolio)
 
 
-def stop_live() -> None:
-    global _live_running
-    _live_running = False
+def _live_loop(username: str, portfolio: str = "default") -> None:
+    stop = _live_stops.get((username, portfolio))
+    while stop is not None and not stop.is_set():
+        try:
+            _live_once(username, portfolio)
+        except Exception as exc:
+            print(f"autopilot 실시간 루프 오류 ({username}/{portfolio}): {exc}")
+        # stop_live가 신호를 주면 300초를 기다리지 않고 바로 깨어난다
+        stop.wait(LIVE_INTERVAL_SEC)
+
+
+def live_keys() -> list[LiveKey]:
+    """현재 돌고 있는 (username, portfolio) 목록. 죽은 스레드는 정리한다."""
+    with _live_lock:
+        for key, thread in list(_live_threads.items()):
+            if not thread.is_alive():
+                _live_threads.pop(key, None)
+                _live_stops.pop(key, None)
+        return sorted(_live_threads)
+
+
+def start_live(username: str, portfolio: str = "default") -> None:
+    """해당 포트폴리오의 실시간 루프를 띄운다. 이미 돌고 있으면 아무것도 안 한다."""
+    key = (username, portfolio)
+    with _live_lock:
+        existing = _live_threads.get(key)
+        if existing is not None and existing.is_alive():
+            return
+        _live_stops[key] = threading.Event()
+        thread = threading.Thread(target=_live_loop, args=key, daemon=True)
+        _live_threads[key] = thread
+        thread.start()
+
+
+def stop_live(username: str | None = None, portfolio: str | None = None) -> None:
+    """실시간 루프를 멈춘다.
+
+    인자 없이 부르면 전부, username만 주면 그 사용자 전부, 둘 다 주면 하나만.
+    """
+    with _live_lock:
+        targets = [
+            key for key in _live_threads
+            if (username is None or key[0] == username)
+            and (portfolio is None or key[1] == portfolio)
+        ]
+        for key in targets:
+            stop = _live_stops.pop(key, None)
+            if stop is not None:
+                stop.set()
+            # 곧바로 다시 start_live 할 수 있도록 등록을 즉시 지운다.
+            # 멈추는 중인 스레드는 다음 확인에서 스스로 빠져나간다.
+            _live_threads.pop(key, None)

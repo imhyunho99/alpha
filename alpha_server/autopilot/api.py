@@ -18,11 +18,17 @@ from .temperature import profile_for
 router = APIRouter(prefix="/autopilot", tags=["autopilot"])
 
 
+# 포트폴리오 이름은 파일명이 되므로 형태를 좁게 잡는다. store 쪽에도 sanitize가
+# 있지만, 잘못된 이름은 저장까지 가기 전에 422로 돌려보내는 편이 낫다.
+PORTFOLIO_PATTERN = r"^[A-Za-z0-9가-힣_-]{1,32}$"
+
+
 class ConfigPayload(BaseModel):
     temperature: int = Field(ge=1, le=10)
     capital: float = Field(ge=0)
     active: bool
     horizon: str = "medium"
+    portfolio: str = Field(default="default", pattern=PORTFOLIO_PATTERN)
 
 
 class BacktestPayload(BaseModel):
@@ -31,8 +37,8 @@ class BacktestPayload(BaseModel):
     years: int = Field(default=3, ge=1, le=10)
 
 
-def _account_for(username: str, cfg: dict) -> PaperAccount:
-    account, _ = store.load_account(username)
+def _account_for(username: str, cfg: dict, portfolio: str = "default") -> PaperAccount:
+    account, _ = store.load_account(username, portfolio)
     return account or PaperAccount(cash=float(cfg.get("capital", 0.0)))
 
 
@@ -75,30 +81,54 @@ def _recent_autopilot_events(username: str, period: str) -> list[dict]:
     return events
 
 
+@router.get("/portfolios", summary="내 포트폴리오 목록")
+def list_portfolios(user: UserPublic = Depends(require_user)):
+    names = store.list_portfolios(user.username) or ["default"]
+    out = []
+    for name in names:
+        cfg = store.load_config(user.username, name)
+        account = _account_for(user.username, cfg, name)
+        prices = _live_prices_for(account)
+        initial = float(cfg.get("capital", 0.0)) or 1.0
+        equity = account.equity(prices)
+        out.append({
+            "portfolio": name,
+            "temperature": cfg["temperature"],
+            "active": cfg["active"],
+            "capital": cfg.get("capital", 0.0),
+            "equity": round(equity, 2),
+            "return_pct": round((equity - initial) / initial * 100.0, 2),
+        })
+    return {"portfolios": out}
+
+
 @router.get("/config", summary="현재 온도·자본금·활성 여부")
-def get_config(user: UserPublic = Depends(require_user)):
-    return store.load_config(user.username)
+def get_config(portfolio: str = "default", user: UserPublic = Depends(require_user)):
+    return store.load_config(user.username, portfolio)
 
 
 @router.put("/config", summary="온도·자본금 설정, 자동 운용 on/off")
 def put_config(payload: ConfigPayload, user: UserPublic = Depends(require_user)):
     cfg = payload.model_dump()
-    store.save_config(user.username, cfg)
+    portfolio = cfg["portfolio"]
+    store.save_config(user.username, cfg, portfolio)
 
     if cfg["active"]:
-        account, _ = store.load_account(user.username)
+        account, _ = store.load_account(user.username, portfolio)
         if account is None:
-            store.save_account(user.username, PaperAccount(cash=cfg["capital"]), None)
-        start_live(user.username)
+            store.save_account(
+                user.username, PaperAccount(cash=cfg["capital"]), None, portfolio
+            )
+        start_live(user.username, portfolio)
     else:
-        stop_live()
+        stop_live(user.username, portfolio)
     return cfg
 
 
 @router.get("/state", summary="실시간 대시보드")
-def get_state(user: UserPublic = Depends(require_user)):
-    cfg = store.load_config(user.username)
-    account = _account_for(user.username, cfg)
+def get_state(portfolio: str = "default", user: UserPublic = Depends(require_user)):
+    cfg = store.load_config(user.username, portfolio)
+    account = _account_for(user.username, cfg, portfolio)
     prices = _live_prices_for(account)
 
     equity = account.equity(prices)
@@ -106,6 +136,7 @@ def get_state(user: UserPublic = Depends(require_user)):
     alerts = reporting.check_alerts(account, prices, initial, Journal(mirror_audit=False))
 
     return {
+        "portfolio": portfolio,
         "temperature": cfg["temperature"],
         "active": cfg["active"],
         "equity": round(equity, 2),
@@ -179,9 +210,13 @@ def post_backtest(payload: BacktestPayload, user: UserPublic = Depends(require_u
 
 
 @router.get("/briefing", summary="일일/주간 브리핑")
-def get_briefing(period: str = "daily", user: UserPublic = Depends(require_user)):
-    cfg = store.load_config(user.username)
-    account = _account_for(user.username, cfg)
+def get_briefing(
+    period: str = "daily",
+    portfolio: str = "default",
+    user: UserPublic = Depends(require_user),
+):
+    cfg = store.load_config(user.username, portfolio)
+    account = _account_for(user.username, cfg, portfolio)
     prices = _live_prices_for(account)
     events = _recent_autopilot_events(user.username, period)
     return reporting.build_briefing(
@@ -190,9 +225,9 @@ def get_briefing(period: str = "daily", user: UserPublic = Depends(require_user)
 
 
 @router.get("/alerts", summary="미확인 긴급 알림")
-def get_alerts(user: UserPublic = Depends(require_user)):
-    cfg = store.load_config(user.username)
-    account = _account_for(user.username, cfg)
+def get_alerts(portfolio: str = "default", user: UserPublic = Depends(require_user)):
+    cfg = store.load_config(user.username, portfolio)
+    account = _account_for(user.username, cfg, portfolio)
     prices = _live_prices_for(account)
 
     journal = Journal(mirror_audit=False)
