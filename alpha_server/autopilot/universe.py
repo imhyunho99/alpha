@@ -14,8 +14,7 @@ def _safe(fetcher, label: str) -> list[str]:
         return []
 
 
-def tickers_for(tiers: tuple[str, ...]) -> list[str]:
-    """티어 목록을 중복 없는 티커 리스트로 편다. 순서는 티어 순서를 따른다."""
+def _pools_for(tiers: tuple[str, ...]) -> list[list[str]]:
     pools: list[list[str]] = []
     for tier in tiers:
         if tier == "etf":
@@ -28,10 +27,44 @@ def tickers_for(tiers: tuple[str, ...]) -> list[str]:
             pools.append(_safe(asset_screener.get_kospi200_tickers, "kr"))
         elif tier == "crypto":
             pools.append(_safe(lambda: asset_screener.get_top_crypto_tickers(200), "crypto"))
+    return pools
 
+
+def tickers_for(tiers: tuple[str, ...]) -> list[str]:
+    """티어 목록을 중복 없는 티커 리스트로 편다. 순서는 티어 순서를 따른다."""
     seen: dict[str, None] = {}
-    for pool in pools:
+    for pool in _pools_for(tiers):
         for t in pool:
             if t:
                 seen.setdefault(t, None)
     return list(seen)
+
+
+def sample_across_tiers(tiers: tuple[str, ...], limit: int) -> list[str]:
+    """티어를 가로질러 라운드로빈으로 limit개를 뽑는다.
+
+    tickers_for()[:limit] 로 자르면 앞쪽 티어가 목록을 독식한다. 온도 10의
+    유니버스에서 코인이 한 종목도 안 뽑히면 온도 다이얼이 무의미해지므로,
+    각 티어에서 번갈아 가져와 모든 티어가 대표되게 한다.
+    """
+    if limit <= 0:
+        return []
+
+    pools = [p for p in _pools_for(tiers) if p]
+    seen: dict[str, None] = {}
+    index = 0
+    while len(seen) < limit and pools:
+        exhausted = True
+        for pool in pools:
+            if index >= len(pool):
+                continue
+            exhausted = False
+            ticker = pool[index]
+            if ticker:
+                seen.setdefault(ticker, None)
+            if len(seen) >= limit:
+                break
+        if exhausted:
+            break
+        index += 1
+    return list(seen)[:limit]

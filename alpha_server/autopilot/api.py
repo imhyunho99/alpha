@@ -133,7 +133,8 @@ def post_backtest(payload: BacktestPayload, user: UserPublic = Depends(require_u
     from . import fx
 
     profile = profile_for(payload.temperature)
-    tickers = universe.tickers_for(profile.universe_tiers)[:60]  # 백테스트는 상위 60종목으로 제한
+    # 티어를 가로질러 뽑는다 — 머리부터 자르면 온도 10에서도 코인이 안 들어간다
+    tickers = universe.sample_across_tiers(profile.universe_tiers, 60)
     frames = download_many(tickers, period=f"{payload.years}y")
 
     def score_fn(ticker: str, horizon: str):

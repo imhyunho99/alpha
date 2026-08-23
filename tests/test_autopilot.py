@@ -338,3 +338,41 @@ def test_briefing_is_quiet_with_no_activity(api_client):
     assert body["period"] == "daily"
     assert body["buys"] == 0
     assert body["headline"]
+
+
+def test_sample_across_tiers_represents_every_tier(monkeypatch):
+    monkeypatch.setattr(
+        universe.asset_screener, "get_sp500_tickers", lambda: [f"L{i}" for i in range(500)]
+    )
+    monkeypatch.setattr(
+        universe.asset_screener, "get_nasdaq_100_tickers", lambda: [f"G{i}" for i in range(100)]
+    )
+    monkeypatch.setattr(
+        universe.asset_screener, "get_kospi200_tickers", lambda: [f"K{i}.KS" for i in range(200)]
+    )
+    monkeypatch.setattr(
+        universe.asset_screener,
+        "get_top_crypto_tickers",
+        lambda limit=200: [f"C{i}-USD" for i in range(200)],
+    )
+
+    tiers = profile_for(10).universe_tiers
+    picked = universe.sample_across_tiers(tiers, 60)
+
+    assert len(picked) == 60
+    # 머리부터 자르는 방식이면 코인이 하나도 없다 — 그게 이 함수의 존재 이유다
+    assert any(t.endswith("-USD") for t in picked)
+    assert any(t.endswith(".KS") for t in picked)
+    assert any(t.startswith("L") for t in picked)
+    assert "SPY" in picked
+
+
+def test_sample_across_tiers_handles_small_pools(monkeypatch):
+    monkeypatch.setattr(universe.asset_screener, "get_sp500_tickers", lambda: ["ONLY"])
+    picked = universe.sample_across_tiers(("etf", "us_large"), 100)
+    # 풀이 다 소진되면 있는 만큼만 돌려주고 무한루프에 빠지지 않는다
+    assert set(picked) == set(universe.ETF_TICKERS) | {"ONLY"}
+
+
+def test_sample_across_tiers_with_zero_limit():
+    assert universe.sample_across_tiers(("etf",), 0) == []
