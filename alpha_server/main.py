@@ -45,6 +45,9 @@ progress_status = {
 auto_update_thread = None
 auto_update_running = False
 
+# 기동 후 첫 데이터 업데이트까지 기다리는 시간
+AUTO_UPDATE_STARTUP_DELAY_SEC = 180
+
 # 위험 관리자 (브로커와 1:1)
 risk_manager = RiskManager(broker=broker)
 
@@ -69,6 +72,10 @@ app = FastAPI(
     version="3.1.0"
 )
 install_handlers(app)
+
+from .autopilot.api import router as autopilot_router  # noqa: E402
+
+app.include_router(autopilot_router)
 
 
 # --- 인증 엔드포인트 ---
@@ -383,12 +390,28 @@ def update_all_data_with_progress():
         progress_status["data_update"]["total"] = len(tickers)
         progress_status["data_update"]["message"] = f"총 {len(tickers)}개 자산 데이터 다운로드 중..."
 
-        from .data_handler import download_ticker_data
-        for i, ticker in enumerate(tickers, 1):
-            progress_status["data_update"]["current"] = i
-            progress_status["data_update"]["message"] = f"{ticker} 다운로드 중... ({i}/{len(tickers)})"
-            download_ticker_data(ticker)
+        # 종목별 순차 호출은 907종목에 30분 넘게 걸리며 그동안 네트워크를 독점해
+        # 자동 운용 루프가 굶는다. 그리고 예전 코드는 받아놓고 저장조차 하지 않아
+        # 사실상 아무 일도 하지 않았다.
+        from .data_handler import download_many, save_to_csv
 
+        CHUNK = 100
+        saved = 0
+        for start in range(0, len(tickers), CHUNK):
+            chunk = tickers[start:start + CHUNK]
+            progress_status["data_update"]["current"] = min(start + CHUNK, len(tickers))
+            progress_status["data_update"]["message"] = (
+                f"{start + 1}~{min(start + CHUNK, len(tickers))} / {len(tickers)} 다운로드 중..."
+            )
+            for ticker, frame in download_many(chunk, period="5y", chunk_size=CHUNK).items():
+                if frame is not None and not frame.empty:
+                    try:
+                        save_to_csv(ticker, frame)
+                        saved += 1
+                    except Exception as exc:
+                        print(f"'{ticker}' 저장 실패: {exc}")
+
+        progress_status["data_update"]["message"] = f"{saved}/{len(tickers)}종목 저장 완료"
         progress_status["data_update"]["status"] = "completed"
         progress_status["data_update"]["message"] = "완료!"
     except Exception as e:
@@ -424,6 +447,13 @@ def update_all_models_with_progress():
 
 def auto_update_task():
     global auto_update_running
+    # 기동 직후 곧바로 907종목을 받으면 자동 운용 루프가 첫 사이클을 못 돈다.
+    # 재시작이 잦은 개발 중에는 특히 그렇다. 조금 늦춰서 루프가 먼저 자리잡게 한다.
+    for _ in range(AUTO_UPDATE_STARTUP_DELAY_SEC // 5):
+        if not auto_update_running:
+            return
+        time.sleep(5)
+
     while auto_update_running:
         try:
             print(f"[{datetime.datetime.now()}] 자동 데이터 업데이트 시작...")
@@ -442,6 +472,22 @@ async def startup_event():
     auto_update_thread = threading.Thread(target=auto_update_task, daemon=True)
     auto_update_thread.start()
     strategy_executor.start()
+
+    # 재시작 후 자동 운용을 되살린다. 이게 없으면 재부팅이나 크래시 한 번에
+    # 매매가 조용히 멈추고, 설정은 여전히 active 라 사용자는 알아채지 못한다.
+    try:
+        from .autopilot import runner as autopilot_runner
+        from .autopilot import store as autopilot_store
+
+        resumed = autopilot_store.list_active()
+        for username, portfolio in resumed:
+            autopilot_runner.start_live(username, portfolio)
+        if resumed:
+            print(f"🤖 자동 운용 재개: {len(resumed)}개 — "
+                  + ", ".join(f"{u}/{p}" for u, p in resumed))
+    except Exception as exc:
+        print(f"자동 운용 재개 실패: {exc}")
+
     audit_log.record("system", "startup")
     print("✅ Alpha 서버 v3.1 시작 (자동 업데이트 6h, 전략 워커 5분 주기)")
 

@@ -7,6 +7,9 @@ from datetime import datetime, timedelta
 # 캐시 파일 경로
 METADATA_CACHE_FILE = os.path.join(os.path.dirname(__file__), "market_data", "metadata_cache.json")
 
+# 중간 저장 주기 — 긴 수집이 중단돼도 진행분을 잃지 않는다
+CACHE_CHECKPOINT_EVERY = 25
+
 def get_ticker_metadata(tickers, force_refresh=False):
     """지정된 티커 목록에 대한 메타데이터(Sector, Industry, MarketCap 등)를 반환합니다.
        매번 yfinance를 호출하지 않도록 로컬 JSON 파일에 캐싱합니다."""
@@ -32,11 +35,25 @@ def get_ticker_metadata(tickers, force_refresh=False):
     # 업데이트가 필요한 티커 확인
     tickers_to_fetch = [t for t in tickers if t not in cache_data]
     
+    def _save_cache():
+        try:
+            with open(METADATA_CACHE_FILE, 'w') as f:
+                json.dump({
+                    '_last_updated': datetime.now().isoformat(),
+                    'data': cache_data
+                }, f, indent=4)
+        except Exception as e:
+            print(f"메타데이터 캐시 저장 실패: {e}")
+
     if tickers_to_fetch:
         print(f"총 {len(tickers_to_fetch)}개 종목의 메타데이터를 다운로드합니다. (yfinance)")
         for i, ticker in enumerate(tickers_to_fetch):
             if i % 10 == 0:
                 print(f"진행 상황: {i}/{len(tickers_to_fetch)}")
+            # 종목당 yf.Ticker().info 는 수 초씩 걸린다. 끝에서 한 번만 저장하면
+            # 250종목 도중에 죽었을 때 전부 날아가고 다음 실행이 처음부터 시작한다.
+            if i and i % CACHE_CHECKPOINT_EVERY == 0:
+                _save_cache()
             try:
                 info = yf.Ticker(ticker).info
                 
@@ -56,14 +73,6 @@ def get_ticker_metadata(tickers, force_refresh=False):
                     'beta': 1.0
                 }
                 
-        # 캐시 저장
-        try:
-            with open(METADATA_CACHE_FILE, 'w') as f:
-                json.dump({
-                    '_last_updated': datetime.now().isoformat(),
-                    'data': cache_data
-                }, f, indent=4)
-        except Exception as e:
-            print(f"메타데이터 캐시 저장 실패: {e}")
-            
+        _save_cache()
+
     return cache_data

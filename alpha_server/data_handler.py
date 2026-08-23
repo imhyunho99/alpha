@@ -82,15 +82,34 @@ def save_to_csv(ticker, data):
     print(f"성공: '{ticker}' 데이터를 {csv_path}에 저장했습니다.")
 
 def load_from_csv(ticker):
-    """CSV 파일에서 데이터를 로드합니다."""
+    """CSV 파일에서 데이터를 로드합니다.
+
+    과거에 저장된 일부 파일은 yfinance 다중 헤더 잔재를 갖고 있어
+    인덱스 첫 행이 날짜가 아니라 'Ticker' 같은 문자열이다. 그런 행은
+    날짜 파싱에 실패하므로 걸러내고, 값 컬럼도 숫자로 강제한다.
+    """
     csv_path = os.path.join(CSV_DIR, f"{ticker}.csv")
     if not os.path.exists(csv_path):
         return None
     try:
-        df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
-        return df
+        df = pd.read_csv(csv_path, index_col=0)
     except Exception as e:
         print(f"오류: CSV 파일 로드 실패: {e}")
+        return None
+
+    try:
+        df.index = pd.to_datetime(df.index, errors="coerce", utc=False)
+        df = df[df.index.notna()]
+
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(how="all")
+
+        if df.empty:
+            return None
+        return df.sort_index()
+    except Exception as e:
+        print(f"오류: '{ticker}' CSV 정규화 실패: {e}")
         return None
 
 import socket
@@ -266,13 +285,59 @@ def update_all_data():
             USE_QUESTDB = False
     
     if not USE_QUESTDB:
-        for ticker in tickers:
-            data = download_ticker_data(ticker, period="2y")
-            if data is not None:
+        # 종목당 개별 호출이면 907종목이 30분 넘게 네트워크를 독점한다. 그동안
+        # 자동 운용 루프의 시세 조회가 뒤에 줄을 서서 한 사이클도 못 끝낸다.
+        frames = download_many(tickers, period="2y")
+        for ticker, data in frames.items():
+            if data is not None and not data.empty:
                 save_to_csv(ticker, data)
                 success_count += 1
-    
+
     print(f"--- 총 {success_count}/{len(tickers)}개 자산 데이터 업데이트 완료 ---")
+
+def download_many(tickers, period="5y", interval="1d", chunk_size=100):
+    """여러 종목을 배치로 내려받는다. {ticker: DataFrame} 반환.
+
+    한 청크가 실패해도 나머지는 살린다 — 900종목 중 몇 개 때문에
+    전체가 죽으면 안 된다.
+    """
+    result = {}
+    for start in range(0, len(tickers), chunk_size):
+        chunk = tickers[start:start + chunk_size]
+        try:
+            raw = yf.download(
+                tickers=chunk,
+                period=period,
+                interval=interval,
+                group_by="ticker",
+                auto_adjust=True,
+                progress=False,
+                threads=True,
+            )
+        except Exception as exc:
+            print(f"배치 다운로드 실패 {chunk[:3]}... ({len(chunk)}종목): {exc}")
+            continue
+
+        if raw is None or raw.empty:
+            continue
+
+        for ticker in chunk:
+            try:
+                if isinstance(raw.columns, pd.MultiIndex):
+                    if ticker not in raw.columns.get_level_values(0):
+                        continue
+                    frame = raw[ticker].dropna(how="all")
+                else:
+                    frame = raw.dropna(how="all")
+                if not frame.empty:
+                    result[ticker] = frame
+            except Exception as exc:
+                print(f"'{ticker}' 프레임 추출 실패: {exc}")
+                continue
+
+    print(f"배치 다운로드 완료: {len(result)}/{len(tickers)} 종목")
+    return result
+
 
 if __name__ == '__main__':
     update_all_data()
