@@ -59,9 +59,9 @@ def test_universe_grows_with_temperature(monkeypatch):
 # --- allocator ---
 
 def test_rank_drops_below_min_confidence():
-    probs = {"A": 0.9, "B": 0.6, "C": 0.7}
+    probs = {"A": 0.9, "B": 0.50, "C": 0.7}
     scores = {"A": 10.0, "B": 99.0, "C": 50.0}
-    profile = profile_for(5)  # min_confidence 0.65
+    profile = profile_for(5)  # min_confidence 0.55
     out = rank_candidates(
         ["A", "B", "C"], profile,
         prob_fn=lambda t, h: probs[t],

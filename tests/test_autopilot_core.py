@@ -16,7 +16,7 @@ def test_anchor_temperatures_match_spec():
     assert p1.cash_floor_pct == 70
     assert p1.max_position_pct == 3
     assert p1.max_holdings == 5
-    assert p1.min_confidence == 0.75
+    assert p1.min_confidence == 0.60
     assert p1.max_leverage == 1.0
 
     p5 = profile_for(5)
@@ -214,3 +214,30 @@ def test_usd_krw_series_falls_back_to_empty_on_failure(monkeypatch):
     assert out.empty
     # 빈 시리즈는 resolve_rate에서 폴백으로 처리된다
     assert fx.resolve_rate(out, datetime(2026, 1, 15, tzinfo=timezone.utc)) == fx.FALLBACK_USD_KRW
+
+
+def test_min_confidence_falls_as_temperature_rises():
+    """온도가 오르면 진입 문턱이 낮아진다 — 다이얼의 방향성 불변식."""
+    values = [profile_for(t).min_confidence for t in range(1, 11)]
+    assert values == sorted(values, reverse=True)
+    assert values[0] > values[-1]
+
+
+def test_min_confidence_is_reachable_by_the_model():
+    """모델 확률은 평균 0.511 / 최대 0.850 으로 분포가 좁다.
+
+    2026-08-23 측정에서 0.75 를 넘긴 관측은 전체의 0.5%뿐이라 온도 1이 3년간
+    한 건도 거래하지 못했다. 어떤 온도의 문턱도 그 영역에 있으면 안 된다.
+    """
+    for t in range(1, 11):
+        assert profile_for(t).min_confidence <= 0.70, (
+            f"온도 {t}의 min_confidence 가 모델이 거의 도달 못 하는 영역입니다"
+        )
+
+
+def test_etf_tier_includes_bonds():
+    """가장 보수적인 온도에 채권이 없으면 보수적이라 할 수 없다."""
+    from alpha_server.autopilot.universe import ETF_TICKERS
+
+    assert {"TLT", "IEF", "AGG"} <= set(ETF_TICKERS)
+    assert len(ETF_TICKERS) >= 15

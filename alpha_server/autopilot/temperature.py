@@ -4,20 +4,32 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # 앵커 온도. 사이값은 선형 보간한다.
+#
+# min_confidence 는 글로벌 모델의 실제 확률 분포에 맞춰 정했다. 2026-08-23에
+# 125종목 × 3년(관측 148,591개)을 측정한 결과 평균 0.511, 최대 0.850으로
+# 분포가 좁다. 임계별 하루 평균 통과 종목 수:
+#     0.75 → 0.6개    0.65 → 11.6개    0.55 → 59.4개    0.50 → 78.4개
+# 초기값이던 0.75/0.65/0.55 중 0.75는 사실상 도달 불가능해 온도 1이 3년간
+# 한 건도 거래하지 않았다. 가장 안전한 설정을 고른 사용자가 빈 계좌를 받는 것은
+# 기능이 아니라 고장이다.
+#
+# 주의: 분포가 좁다는 것 자체가 모델의 확신이 약하다는 뜻이다. 재보정은
+# 다이얼을 쓸 수 있게 만들 뿐 모델을 좋게 만들지 않는다. 모델을 다시 학습하면
+# 이 숫자들도 다시 측정해야 한다.
 _ANCHORS: dict[int, dict[str, float]] = {
     1: {
         "cash_floor_pct": 70.0, "max_position_pct": 3.0, "max_holdings": 5.0,
-        "min_confidence": 0.75, "stop_loss_pct": 3.0, "take_profit_pct": 6.0,
+        "min_confidence": 0.60, "stop_loss_pct": 3.0, "take_profit_pct": 6.0,
         "rebalance_days": 7.0,
     },
     5: {
         "cash_floor_pct": 40.0, "max_position_pct": 7.0, "max_holdings": 10.0,
-        "min_confidence": 0.65, "stop_loss_pct": 7.0, "take_profit_pct": 15.0,
+        "min_confidence": 0.55, "stop_loss_pct": 7.0, "take_profit_pct": 15.0,
         "rebalance_days": 3.0,
     },
     10: {
         "cash_floor_pct": 5.0, "max_position_pct": 15.0, "max_holdings": 20.0,
-        "min_confidence": 0.55, "stop_loss_pct": 15.0, "take_profit_pct": 40.0,
+        "min_confidence": 0.50, "stop_loss_pct": 15.0, "take_profit_pct": 40.0,
         "rebalance_days": 1.0,
     },
 }

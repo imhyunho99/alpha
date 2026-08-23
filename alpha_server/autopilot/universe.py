@@ -3,7 +3,20 @@ from __future__ import annotations
 
 from .. import asset_screener
 
-ETF_TICKERS: tuple[str, ...] = ("SPY", "QQQ", "GLD", "SLV", "USO")
+# 저온도 사용자가 실제로 담을 수 있는 폭이 있어야 한다. 원래 목록은 5개뿐이었고
+# 채권이 하나도 없었다 — "가장 보수적" 설정에 채권이 없는 건 말이 안 된다.
+ETF_TICKERS: tuple[str, ...] = (
+    # 광범위 지수
+    "SPY", "QQQ", "DIA", "IWM", "VTI",
+    # 채권 — 보수적 포트폴리오의 핵심
+    "TLT", "IEF", "LQD", "HYG", "AGG", "SHY",
+    # 실물/안전자산
+    "GLD", "SLV", "USO", "DBC",
+    # 배당·저변동
+    "SCHD", "VIG", "USMV",
+    # 섹터
+    "XLK", "XLV", "XLF", "XLE", "XLU", "XLP",
+)
 
 
 def _safe(fetcher, label: str) -> list[str]:
