@@ -390,12 +390,28 @@ def update_all_data_with_progress():
         progress_status["data_update"]["total"] = len(tickers)
         progress_status["data_update"]["message"] = f"총 {len(tickers)}개 자산 데이터 다운로드 중..."
 
-        from .data_handler import download_ticker_data
-        for i, ticker in enumerate(tickers, 1):
-            progress_status["data_update"]["current"] = i
-            progress_status["data_update"]["message"] = f"{ticker} 다운로드 중... ({i}/{len(tickers)})"
-            download_ticker_data(ticker)
+        # 종목별 순차 호출은 907종목에 30분 넘게 걸리며 그동안 네트워크를 독점해
+        # 자동 운용 루프가 굶는다. 그리고 예전 코드는 받아놓고 저장조차 하지 않아
+        # 사실상 아무 일도 하지 않았다.
+        from .data_handler import download_many, save_to_csv
 
+        CHUNK = 100
+        saved = 0
+        for start in range(0, len(tickers), CHUNK):
+            chunk = tickers[start:start + CHUNK]
+            progress_status["data_update"]["current"] = min(start + CHUNK, len(tickers))
+            progress_status["data_update"]["message"] = (
+                f"{start + 1}~{min(start + CHUNK, len(tickers))} / {len(tickers)} 다운로드 중..."
+            )
+            for ticker, frame in download_many(chunk, period="5y", chunk_size=CHUNK).items():
+                if frame is not None and not frame.empty:
+                    try:
+                        save_to_csv(ticker, frame)
+                        saved += 1
+                    except Exception as exc:
+                        print(f"'{ticker}' 저장 실패: {exc}")
+
+        progress_status["data_update"]["message"] = f"{saved}/{len(tickers)}종목 저장 완료"
         progress_status["data_update"]["status"] = "completed"
         progress_status["data_update"]["message"] = "완료!"
     except Exception as e:

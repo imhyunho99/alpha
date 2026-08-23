@@ -511,3 +511,31 @@ def test_loader_accepts_medium(tmp_path, monkeypatch):
     assert gmp._load_model_and_features("medium") is not None, (
         "'medium' 이 mid 모델로 해석되지 않으면 자동 운용이 아무것도 못 산다"
     )
+
+
+def test_progress_data_update_batches_and_saves(monkeypatch, tmp_path):
+    """예전 코드는 종목별로 받아놓고 저장조차 하지 않았다."""
+    import pandas as pd
+
+    from alpha_server import data_handler, main as server_main
+
+    monkeypatch.setattr(server_main, "get_all_tickers", lambda: [f"T{i}" for i in range(5)])
+    monkeypatch.setattr(data_handler, "CSV_DIR", str(tmp_path))
+
+    batches = []
+
+    def fake_many(tickers, **kwargs):
+        batches.append(list(tickers))
+        idx = pd.DatetimeIndex(["2026-08-23"])
+        return {t: pd.DataFrame({"Close": [1.0]}, index=idx) for t in tickers}
+
+    monkeypatch.setattr(data_handler, "download_many", fake_many)
+
+    saved = []
+    monkeypatch.setattr(data_handler, "save_to_csv", lambda t, d: saved.append(t))
+
+    server_main.update_all_data_with_progress()
+
+    assert batches, "배치 다운로드를 쓰지 않았습니다"
+    assert sorted(saved) == [f"T{i}" for i in range(5)], "받은 데이터를 저장하지 않았습니다"
+    assert server_main.progress_status["data_update"]["status"] == "completed"
