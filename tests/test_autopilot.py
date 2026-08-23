@@ -376,3 +376,31 @@ def test_sample_across_tiers_handles_small_pools(monkeypatch):
 
 def test_sample_across_tiers_with_zero_limit():
     assert universe.sample_across_tiers(("etf",), 0) == []
+
+
+def test_state_exposes_how_long_it_has_been_offline(api_client):
+    """한 달 뒤 계좌를 비교할 때 가동 공백을 모르면 수익률 차이를 해석할 수 없다."""
+    from datetime import datetime, timedelta, timezone
+
+    from alpha_server.autopilot import store
+    from alpha_server.autopilot.account import PaperAccount
+
+    h = _auth_header(api_client)
+    api_client.put("/autopilot/config", headers=h,
+                   json={"temperature": 5, "capital": 10_000_000, "active": False})
+
+    store.save_account("kim", PaperAccount(cash=1e7), None, "default",
+                       last_tracked_at=datetime.now(timezone.utc) - timedelta(hours=9))
+
+    body = api_client.get("/autopilot/state", headers=h).json()
+    assert body["last_tracked_at"] is not None
+    assert 8.5 <= body["hours_since_tracked"] <= 9.5
+
+
+def test_state_reports_none_when_never_tracked(api_client):
+    h = _auth_header(api_client)
+    api_client.put("/autopilot/config", headers=h,
+                   json={"temperature": 5, "capital": 10_000_000, "active": False})
+    body = api_client.get("/autopilot/state", headers=h).json()
+    assert body["last_tracked_at"] is None
+    assert body["hours_since_tracked"] is None

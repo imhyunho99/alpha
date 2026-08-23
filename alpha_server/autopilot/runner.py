@@ -1,9 +1,10 @@
 """백테스트 루프와 실시간 루프. 둘 다 engine.step()을 부른다."""
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 from . import store, universe
 from .account import PaperAccount
@@ -13,7 +14,12 @@ from .journal import Journal
 from .prices import HistoricalPrices, LivePrices
 from .temperature import profile_for
 
-LIVE_INTERVAL_SEC = 300
+# 모델은 20영업일 앞을 보고 리밸런싱은 1~7일마다다. 신호 데이터(CSV)는 6시간마다
+# 갱신된다. 5분마다 도는 건 그중 287번이 아무것도 안 바뀐 상태에서 재확인하는
+# 것이었고, 대신 맥을 한 달 내내 켜두라는 요구가 됐다.
+#
+# 1시간 주기로 낮추고, 꺼져 있던 구간은 catch_up() 이 일봉으로 재생한다.
+LIVE_INTERVAL_SEC = int(os.getenv("ALPHA_AUTOPILOT_INTERVAL_SEC", "3600"))
 LIVE_UNIVERSE_CAP = 150
 
 # 한 사용자가 온도가 다른 계좌를 여러 개 굴린다. 루프는 (username, portfolio) 단위다.
@@ -116,11 +122,155 @@ def _load_live_signals():
     return predict_proba_with_global_model, score_fn
 
 
+# 이보다 짧은 공백은 재생하지 않는다. 일봉 해상도로는 의미가 없다.
+CATCH_UP_MIN_GAP_HOURS = 20
+
+# 한 번에 재생할 수 있는 최대 일수. 이보다 오래 꺼져 있었으면 재생하지 않고
+# 공백으로 남긴다 — 몇 달치를 되살리는 건 백테스트지 운용이 아니다.
+CATCH_UP_MAX_DAYS = 45
+
+
+def _fetch_hourly(tickers: list[str], gap) -> dict:
+    """공백 구간의 시간봉. yfinance 는 1h 를 60일치까지 준다 (하루 약 5봉).
+
+    실패하면 빈 dict — 호출부가 일봉으로 폴백한다.
+    """
+    import pandas as pd
+    import yfinance as yf
+
+    days = min(max(gap.days + 2, 2), 59)
+    out: dict = {}
+    CHUNK = 50
+    for start in range(0, len(tickers), CHUNK):
+        chunk = tickers[start:start + CHUNK]
+        try:
+            raw = yf.download(
+                tickers=chunk, period=f"{days}d", interval="1h",
+                group_by="ticker", auto_adjust=True, progress=False, threads=True,
+            )
+        except Exception as exc:
+            print(f"시간봉 조회 실패({len(chunk)}종목): {exc}")
+            continue
+        if raw is None or raw.empty:
+            continue
+        for t in chunk:
+            try:
+                frame = raw[t] if isinstance(raw.columns, pd.MultiIndex) else raw
+                frame = frame.dropna(how="all")
+                if not frame.empty and "Close" in frame.columns:
+                    out[t] = frame
+            except Exception:
+                continue
+    return out
+
+
+def catch_up(username: str, portfolio: str = "default") -> int:
+    """맥이 꺼져 있던 구간을 일봉으로 재생한다. 재생한 스텝 수를 돌려준다.
+
+    백테스트와 실시간이 같은 step() 을 쓰도록 만들어 둔 덕분에 그대로 재사용한다.
+    재생 해상도는 **일봉**이다. 공백 중 장중에 손절선을 찍고 반등한 움직임은
+    잡히지 않고, 그날 종가 기준으로만 판정된다.
+    """
+    from datetime import timedelta
+
+    from ..data_handler import load_from_csv
+    from . import fx
+    from .signals import build_signal_table
+
+    tag = f"[autopilot {username}/{portfolio}]"
+    last_tracked = store.load_tracked_at(username, portfolio)
+    if last_tracked is None:
+        return 0
+
+    now = datetime.now(timezone.utc)
+    gap = now - last_tracked
+    if gap < timedelta(hours=CATCH_UP_MIN_GAP_HOURS):
+        return 0
+    if gap > timedelta(days=CATCH_UP_MAX_DAYS):
+        print(f"{tag} 공백 {gap.days}일 — 재생 상한({CATCH_UP_MAX_DAYS}일) 초과, "
+              f"재생하지 않고 현재 시점부터 이어갑니다", flush=True)
+        return 0
+
+    cfg = store.load_config(username, portfolio)
+    profile = profile_for(int(cfg["temperature"]))
+    tickers = universe.sample_across_tiers(profile.universe_tiers, LIVE_UNIVERSE_CAP)
+
+    # 신호는 일봉 CSV 로 만들고, 재생 걸음은 시간봉으로 걷는다. 온도 10은
+    # 4시간마다 리밸런싱하므로 일 단위로는 재현이 안 된다.
+    frames = {}
+    for t in tickers:
+        df = load_from_csv(t)
+        if df is not None and not df.empty and "Close" in df.columns:
+            frames[t] = df
+    if not frames:
+        print(f"{tag} 공백 재생 실패 — 로컬 시세가 없습니다", flush=True)
+        return 0
+
+    try:
+        table = build_signal_table(frames, horizon=cfg.get("horizon", "medium"))
+    except Exception as exc:
+        print(f"{tag} 공백 재생 실패 — 신호 생성 오류: {exc}", flush=True)
+        return 0
+    if not table.probabilities:
+        return 0
+
+    account, last_rebalance = store.load_account(username, portfolio)
+    if account is None:
+        return 0
+
+    usable = {t: f for t, f in frames.items() if t in table.probabilities}
+
+    # 가격은 시간봉으로 받아 손절/익절 판정을 촘촘하게 한다. 실패하면 일봉으로
+    # 폴백한다 — 거친 재생이라도 아예 건너뛰는 것보다 낫다.
+    step_hours = max(1.0, min(float(profile.rebalance_hours), 24.0))
+    hourly = _fetch_hourly(list(usable), gap)
+    if hourly:
+        price_frames = hourly
+        resolution = "시간봉"
+    else:
+        price_frames = usable
+        step_hours = 24.0
+        resolution = "일봉 폴백"
+
+    prices = HistoricalPrices(price_frames, rates=fx.usd_krw_series(last_tracked, now))
+    clock = BacktestClock(last_tracked, now, step_hours=step_hours)
+    journal = Journal(actor=f"{username}/{portfolio}")
+
+    steps = 0
+    fills = 0
+    while True:
+        account.accrue_interest(days=step_hours / 24.0)
+        outcome = step(
+            account=account, profile=profile, tickers=list(usable), prices=prices,
+            clock=clock, journal=journal,
+            prob_fn=table.prob_fn_for(clock), score_fn=table.score_fn_for(clock),
+            horizon=cfg.get("horizon", "medium"), last_rebalance=last_rebalance,
+        )
+        if outcome.fills and outcome.skipped is None:
+            last_rebalance = outcome.at
+        fills += len(outcome.fills)
+        steps += 1
+        if not clock.advance():
+            break
+
+    store.save_account(username, account, last_rebalance, portfolio, last_tracked_at=now)
+    print(f"{tag} 공백 재생: {gap.days}일 {gap.seconds // 3600}시간 → "
+          f"{steps}스텝({step_hours:.0f}시간 간격), 체결 {fills}건, {resolution}",
+          flush=True)
+    return steps
+
+
 def _live_once(username: str, portfolio: str = "default") -> None:
     """해당 포트폴리오 계좌 하나를 한 스텝 굴린다. 다른 계좌는 건드리지 않는다."""
     cfg = store.load_config(username, portfolio)
     if not cfg.get("active"):
         return
+
+    # 꺼져 있던 구간을 먼저 따라잡는다. 그 다음에야 현재 시점을 본다.
+    try:
+        catch_up(username, portfolio)
+    except Exception as exc:
+        print(f"[autopilot {username}/{portfolio}] 공백 재생 오류: {exc}", flush=True)
 
     profile = profile_for(int(cfg["temperature"]))
     # 티어를 가로질러 상한만큼만 본다. 온도 10의 전체 유니버스(약 900종목)를
@@ -141,7 +291,8 @@ def _live_once(username: str, portfolio: str = "default") -> None:
     )
     if outcome.fills and outcome.skipped is None:
         last_rebalance = outcome.at
-    store.save_account(username, account, last_rebalance, portfolio)
+    store.save_account(username, account, last_rebalance, portfolio,
+                       last_tracked_at=datetime.now(timezone.utc))
 
     # 무인으로 한 달을 도는 루프다. 로그가 없으면 "돌았는데 살 게 없었다"와
     # "아예 안 돌았다"를 구분할 수 없다.

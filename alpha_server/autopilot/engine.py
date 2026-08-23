@@ -70,7 +70,7 @@ def step(
 
     # 3) 리밸런싱 주기
     if last_rebalance is not None:
-        if at < last_rebalance + timedelta(days=profile.rebalance_days):
+        if at < last_rebalance + timedelta(hours=profile.rebalance_hours):
             return StepResult(at, account.equity(snapshot), fills, skipped="cooldown")
 
     # 4) 목표 포트폴리오

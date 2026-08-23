@@ -27,19 +27,28 @@ _ANCHORS: dict[int, dict[str, float]] = {
     1: {
         "cash_floor_pct": 70.0, "max_position_pct": 3.0, "max_holdings": 5.0,
         "min_confidence": 0.65, "stop_loss_pct": 3.0, "take_profit_pct": 6.0,
-        "rebalance_days": 7.0,
+        "rebalance_hours": 168.0,   # 7일
     },
     5: {
         "cash_floor_pct": 40.0, "max_position_pct": 7.0, "max_holdings": 10.0,
         "min_confidence": 0.58, "stop_loss_pct": 7.0, "take_profit_pct": 15.0,
-        "rebalance_days": 3.0,
+        "rebalance_hours": 72.0,    # 3일
     },
     10: {
         "cash_floor_pct": 5.0, "max_position_pct": 15.0, "max_holdings": 20.0,
         "min_confidence": 0.52, "stop_loss_pct": 15.0, "take_profit_pct": 40.0,
-        "rebalance_days": 1.0,
+        "rebalance_hours": 4.0,     # 4시간 — 하루 여러 번
     },
 }
+
+# rebalance_hours 를 일 단위가 아니라 시간 단위로 두는 이유:
+#
+# 고온도에서 하루 한 번은 너무 굼뜨다. 진입 신호(모델 확률)는 하루 단위로만
+# 바뀌지만, **손절과 익절은 그렇지 않다**. 온도 10이 -15% 손절선을 하루에 한 번만
+# 확인하면 그 사이 움직임을 통째로 놓친다. 고온도가 "공격적"이라는 건 더 자주
+# 반응한다는 뜻이어야 한다.
+#
+# 공백 재생도 같은 해상도를 따른다 (yfinance 시간봉은 60일치까지 나온다).
 
 # 레버리지는 보간하지 않는다. 온도 8부터만 1을 넘는다.
 _LEVERAGE: dict[int, float] = {8: 1.5, 9: 2.0, 10: 3.0}
@@ -64,7 +73,7 @@ class RiskProfile:
     min_confidence: float
     stop_loss_pct: float
     take_profit_pct: float
-    rebalance_days: int
+    rebalance_hours: float
     max_leverage: float
 
 
@@ -97,6 +106,6 @@ def profile_for(temperature: int) -> RiskProfile:
         min_confidence=_interpolate(temperature, "min_confidence"),
         stop_loss_pct=_interpolate(temperature, "stop_loss_pct"),
         take_profit_pct=_interpolate(temperature, "take_profit_pct"),
-        rebalance_days=int(round(_interpolate(temperature, "rebalance_days"))),
+        rebalance_hours=max(1.0, _interpolate(temperature, "rebalance_hours")),
         max_leverage=_LEVERAGE.get(temperature, 1.0),
     )

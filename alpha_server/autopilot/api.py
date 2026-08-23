@@ -135,10 +135,21 @@ def get_state(portfolio: str = "default", user: UserPublic = Depends(require_use
     initial = float(cfg.get("capital", 0.0)) or 1.0
     alerts = reporting.check_alerts(account, prices, initial, Journal(mirror_audit=False))
 
+    tracked = store.load_tracked_at(user.username, portfolio)
+    offline_hours = None
+    if tracked is not None:
+        offline_hours = round(
+            (datetime.now(timezone.utc) - tracked).total_seconds() / 3600.0, 1
+        )
+
     return {
         "portfolio": portfolio,
         "temperature": cfg["temperature"],
         "active": cfg["active"],
+        # 마지막으로 엔진이 본 시각과 그 이후 경과 시간. 맥이 꺼져 있던 구간을
+        # 나중에 알 수 있어야 계좌 간 비교가 의미를 가진다.
+        "last_tracked_at": tracked.isoformat() if tracked else None,
+        "hours_since_tracked": offline_hours,
         "equity": round(equity, 2),
         "cash": round(account.cash, 2),
         "borrowed": round(account.borrowed, 2),
