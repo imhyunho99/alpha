@@ -5,11 +5,15 @@
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from alpha_server.autopilot import universe
-from alpha_server.autopilot.account import PaperAccount
+from alpha_server.autopilot.account import PaperAccount, Position
 from alpha_server.autopilot.allocator import Candidate, rank_candidates, target_allocation
+from alpha_server.autopilot.engine import step
+from alpha_server.autopilot.journal import Journal
 from alpha_server.autopilot.temperature import profile_for
 
 
@@ -132,3 +136,118 @@ def test_target_allocation_is_empty_when_equity_is_wiped_out():
     acct = PaperAccount(cash=0.0, borrowed=1_000_000.0)
     candidates = [Candidate("A", 0.9, 90.0)]
     assert target_allocation(acct, profile_for(5), candidates, prices={}) == {}
+
+
+# --- engine ---
+
+class _FixedPrices:
+    def __init__(self, table):
+        self._table = table
+
+    def get(self, ticker, at):
+        return self._table.get(ticker)
+
+    def get_many(self, tickers, at):
+        return {t: self._table[t] for t in tickers if t in self._table}
+
+
+def _clock(at):
+    class C:
+        def now(self):
+            return at
+
+        def advance(self):
+            return False
+
+    return C()
+
+
+_AT = datetime(2026, 1, 10, tzinfo=timezone.utc)
+
+
+def _step(acct, temperature, tickers, table, last_rebalance=None, prob=0.9, score=80.0):
+    return step(
+        account=acct, profile=profile_for(temperature), tickers=tickers,
+        prices=_FixedPrices(table), clock=_clock(_AT), journal=Journal(mirror_audit=False),
+        prob_fn=lambda t, h: prob, score_fn=lambda t, h: score,
+        horizon="medium", last_rebalance=last_rebalance,
+    )
+
+
+def test_step_buys_toward_target():
+    acct = PaperAccount(cash=10_000_000.0)
+    result = _step(acct, 5, ["A", "B"], {"A": 1000.0, "B": 2000.0})
+    assert result.liquidated is False
+    assert {f.ticker for f in result.fills} == {"A", "B"}
+    assert set(acct.positions) == {"A", "B"}
+
+
+def test_step_liquidates_before_anything_else():
+    acct = PaperAccount(cash=0.0, borrowed=2_000_000.0)
+    acct.positions["A"] = Position("A", quantity=1000, avg_price=2500.0)
+    # 평가 2,200,000 / equity 200,000 → margin 0.09 → 청산
+    result = _step(acct, 10, ["A"], {"A": 2200.0}, prob=0.99, score=99.0)
+    assert result.liquidated is True
+    assert acct.positions == {}
+
+
+def test_step_sells_on_stop_loss():
+    acct = PaperAccount(cash=0.0)
+    acct.positions["A"] = Position("A", quantity=100, avg_price=1000.0)
+    # -20% → 온도 5의 손절 -7% 초과
+    result = _step(acct, 5, ["A"], {"A": 800.0}, last_rebalance=_AT, prob=0.0, score=0.0)
+    assert "A" not in acct.positions
+    assert any(f.side == "sell" for f in result.fills)
+
+
+def test_step_sells_on_take_profit():
+    acct = PaperAccount(cash=0.0)
+    acct.positions["A"] = Position("A", quantity=100, avg_price=1000.0)
+    # +20% → 온도 5의 익절 +15% 초과
+    result = _step(acct, 5, ["A"], {"A": 1200.0}, last_rebalance=_AT, prob=0.0, score=0.0)
+    assert "A" not in acct.positions
+    assert any(f.side == "sell" for f in result.fills)
+
+
+def test_step_skips_when_within_rebalance_window():
+    acct = PaperAccount(cash=10_000_000.0)
+    result = _step(
+        acct, 5, ["A"], {"A": 1000.0},
+        last_rebalance=_AT - timedelta(days=1),  # 온도5는 3일 주기
+    )
+    assert result.skipped == "cooldown"
+    assert acct.positions == {}
+
+
+def test_step_sells_before_buying_to_free_cash():
+    acct = PaperAccount(cash=0.0)
+    acct.positions["OLD"] = Position("OLD", quantity=1000, avg_price=10_000.0)
+    result = _step(acct, 5, ["NEW"], {"OLD": 10_000.0, "NEW": 5_000.0})
+    sides = [f.side for f in result.fills]
+    assert sides.index("sell") < sides.index("buy")
+    assert "OLD" not in acct.positions
+    assert "NEW" in acct.positions
+
+
+def test_step_records_events_in_journal():
+    acct = PaperAccount(cash=10_000_000.0)
+    journal = Journal(mirror_audit=False)
+    step(
+        account=acct, profile=profile_for(5), tickers=["A"],
+        prices=_FixedPrices({"A": 1000.0}), clock=_clock(_AT), journal=journal,
+        prob_fn=lambda t, h: 0.9, score_fn=lambda t, h: 80.0,
+        horizon="medium", last_rebalance=None,
+    )
+    assert any(e["kind"] == "buy" for e in journal.events)
+    assert all(e["at"] == _AT.isoformat() for e in journal.events)
+
+
+def test_step_does_not_churn_when_already_at_target():
+    acct = PaperAccount(cash=10_000_000.0)
+    _step(acct, 5, ["A"], {"A": 1000.0})
+    before = acct.positions["A"].quantity
+
+    # 같은 조건으로 한 번 더 — 목표에 이미 도달했으므로 추가 거래가 없어야 한다
+    result = _step(acct, 5, ["A"], {"A": 1000.0})
+    assert result.fills == []
+    assert acct.positions["A"].quantity == pytest.approx(before)
