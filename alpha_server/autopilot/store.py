@@ -112,3 +112,31 @@ def save_account(
     }
     with open(_path(username, "account", portfolio), "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def list_users() -> list[str]:
+    """상태 파일이 있는 사용자 목록."""
+    if not os.path.isdir(STATE_DIR):
+        return []
+    users: set[str] = set()
+    for name in os.listdir(STATE_DIR):
+        if not name.endswith("_config.json"):
+            continue
+        stem = name[: -len("_config.json")]
+        users.add(stem.split(_SEP)[0] if _SEP in stem else stem)
+    return sorted(users)
+
+
+def list_active() -> list[tuple[str, str]]:
+    """active=true 인 (사용자, 포트폴리오) 전부.
+
+    서버가 재시작하면 라이브 루프는 사라진다. 설정은 active 인데 아무것도 돌지
+    않는 상태가 되고, 사용자는 매매가 멈춘 걸 모른다. 기동 시 이 목록으로
+    되살린다.
+    """
+    out: list[tuple[str, str]] = []
+    for user in list_users():
+        for portfolio in list_portfolios(user) or [DEFAULT_PORTFOLIO]:
+            if load_config(user, portfolio).get("active"):
+                out.append((user, portfolio))
+    return out

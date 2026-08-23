@@ -446,6 +446,22 @@ async def startup_event():
     auto_update_thread = threading.Thread(target=auto_update_task, daemon=True)
     auto_update_thread.start()
     strategy_executor.start()
+
+    # 재시작 후 자동 운용을 되살린다. 이게 없으면 재부팅이나 크래시 한 번에
+    # 매매가 조용히 멈추고, 설정은 여전히 active 라 사용자는 알아채지 못한다.
+    try:
+        from .autopilot import runner as autopilot_runner
+        from .autopilot import store as autopilot_store
+
+        resumed = autopilot_store.list_active()
+        for username, portfolio in resumed:
+            autopilot_runner.start_live(username, portfolio)
+        if resumed:
+            print(f"🤖 자동 운용 재개: {len(resumed)}개 — "
+                  + ", ".join(f"{u}/{p}" for u, p in resumed))
+    except Exception as exc:
+        print(f"자동 운용 재개 실패: {exc}")
+
     audit_log.record("system", "startup")
     print("✅ Alpha 서버 v3.1 시작 (자동 업데이트 6h, 전략 워커 5분 주기)")
 

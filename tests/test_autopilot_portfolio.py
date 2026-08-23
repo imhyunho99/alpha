@@ -260,3 +260,40 @@ def test_live_loop_reads_and_writes_only_its_own_portfolio(state_dir, monkeypatc
     assert store.load_account("kim", "hot")[0] is not None
     assert store.load_account("kim", "cold")[0] is None
     assert store.load_account("kim", "hot")[0].cash == 9_999.0
+
+
+# --- 재시작 후 재개 ---
+
+def test_list_active_finds_running_portfolios(tmp_path, monkeypatch):
+    """서버 재시작 후 무엇을 되살려야 하는지 알아야 한다."""
+    from alpha_server.autopilot import store
+
+    monkeypatch.setattr(store, "STATE_DIR", str(tmp_path))
+
+    store.save_config("kim", {"temperature": 3, "capital": 1e7, "active": True}, "careful")
+    store.save_config("kim", {"temperature": 8, "capital": 1e7, "active": False}, "bold")
+    store.save_config("lee", {"temperature": 5, "capital": 1e7, "active": True})
+
+    active = store.list_active()
+    assert ("kim", "careful") in active
+    assert ("lee", "default") in active
+    assert ("kim", "bold") not in active
+
+
+def test_list_users_from_state_files(tmp_path, monkeypatch):
+    from alpha_server.autopilot import store
+
+    monkeypatch.setattr(store, "STATE_DIR", str(tmp_path))
+    store.save_config("kim", {"temperature": 5, "capital": 0, "active": False}, "a")
+    store.save_config("kim", {"temperature": 5, "capital": 0, "active": False}, "b")
+    store.save_config("lee", {"temperature": 5, "capital": 0, "active": False})
+
+    assert store.list_users() == ["kim", "lee"]
+
+
+def test_list_active_is_empty_without_state(tmp_path, monkeypatch):
+    from alpha_server.autopilot import store
+
+    monkeypatch.setattr(store, "STATE_DIR", str(tmp_path / "nope"))
+    assert store.list_active() == []
+    assert store.list_users() == []
