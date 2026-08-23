@@ -38,7 +38,27 @@ def _probability_series(ticker: str, frame: pd.DataFrame, bundle, metadata=None)
     """전체 기간의 상승 확률. 각 행은 그 시점까지의 정보만으로 만들어진 피처다."""
     from ..global_model_handler import create_global_features_and_target
 
-    model, feature_columns, encoder, cat_cols = bundle
+    model, feature_columns, encoder, cat_cols, feature_set = bundle
+
+    # 새 모델(alpha158)은 정규화된 76피처로 학습됐다. 예전 빌더를 쓰면 입력이 안 맞는다.
+    if feature_set == "alpha158":
+        from ..features_alpha158 import build_features
+
+        rows = build_features(frame).dropna()
+        if rows.empty:
+            return pd.Series(dtype="float64")
+        missing = [c for c in feature_columns if c not in rows.columns]
+        if missing:
+            return pd.Series(dtype="float64")
+        rows = rows[feature_columns]
+        try:
+            proba = model.predict_proba(rows)
+        except Exception:
+            return pd.Series(dtype="float64")
+        classes = list(getattr(model, "classes_", [0, 1]))
+        if 1 not in classes:
+            return pd.Series(dtype="float64")
+        return pd.Series(np.asarray(proba)[:, classes.index(1)], index=rows.index)
 
     if metadata is None:
         from ..market_features import get_ticker_metadata

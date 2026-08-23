@@ -27,11 +27,11 @@ class _FakeModel:
 def test_predict_proba_returns_up_probability(monkeypatch):
     monkeypatch.setattr(
         gmp, "_load_model_and_features",
-        lambda horizon: (_FakeModel(), ["f1"], None, []),
+        lambda horizon: (_FakeModel(), ["f1"], None, [], "legacy17"),
     )
     monkeypatch.setattr(
         gmp, "_latest_feature_row",
-        lambda ticker, features, encoder, cat_cols: [[1.0]],
+        lambda ticker, features, encoder, cat_cols, feature_set="legacy17": [[1.0]],
     )
     assert gmp.predict_proba_with_global_model("AAPL", "short") == pytest.approx(0.7)
 
@@ -44,11 +44,11 @@ def test_predict_proba_returns_none_when_model_missing(monkeypatch):
 def test_predict_proba_returns_none_on_bad_features(monkeypatch):
     monkeypatch.setattr(
         gmp, "_load_model_and_features",
-        lambda horizon: (_FakeModel(), ["f1"], None, []),
+        lambda horizon: (_FakeModel(), ["f1"], None, [], "legacy17"),
     )
     monkeypatch.setattr(
         gmp, "_latest_feature_row",
-        lambda ticker, features, encoder, cat_cols: None,
+        lambda ticker, features, encoder, cat_cols, feature_set="legacy17": None,
     )
     assert gmp.predict_proba_with_global_model("AAPL", "short") is None
 
@@ -56,7 +56,7 @@ def test_predict_proba_returns_none_on_bad_features(monkeypatch):
 def test_label_function_agrees_with_probability(monkeypatch):
     monkeypatch.setattr(
         gmp, "_load_model_and_features",
-        lambda horizon: (_FakeModel(), ["f1"], None, []),
+        lambda horizon: (_FakeModel(), ["f1"], None, [], "legacy17"),
     )
     monkeypatch.setattr(
         gmp, "predict_proba_with_global_model", lambda t, horizon_name="short": 0.7
@@ -345,3 +345,35 @@ def test_reconcile_features_keeps_list_when_it_cannot_be_fixed(capsys):
     out = gmp._reconcile_features(_M(), ["A", "B"])
     assert out == ["A", "B"]
     assert "재학습" in capsys.readouterr().out
+
+
+# --- 피처 세트 구분 ---
+
+def test_bundle_defaults_to_legacy_feature_set(tmp_path, monkeypatch):
+    """예전 모델 파일에는 feature_set 키가 없다."""
+    import joblib
+
+    from alpha_server import global_model_predictor as gmp
+
+    monkeypatch.setattr(gmp, "MODELS_DIR", str(tmp_path))
+    joblib.dump({"model": "M", "features": ["a", "b"], "encoder": None, "cat_cols": []},
+                tmp_path / "global_short_model.joblib")
+    gmp.clear_model_cache()
+
+    bundle = gmp._load_model_and_features("short")
+    assert len(bundle) == 5
+    assert bundle[4] == gmp.LEGACY_FEATURE_SET
+
+
+def test_bundle_reports_alpha158_when_saved(tmp_path, monkeypatch):
+    import joblib
+
+    from alpha_server import global_model_predictor as gmp
+
+    monkeypatch.setattr(gmp, "MODELS_DIR", str(tmp_path))
+    joblib.dump({"model": "M", "features": ["a"], "encoder": None, "cat_cols": [],
+                 "feature_set": gmp.ALPHA158_FEATURE_SET},
+                tmp_path / "global_mid_model.joblib")
+    gmp.clear_model_cache()
+
+    assert gmp._load_model_and_features("mid")[4] == gmp.ALPHA158_FEATURE_SET

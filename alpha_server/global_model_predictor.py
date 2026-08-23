@@ -10,6 +10,11 @@ from .global_model_handler import create_global_features_and_target
 MODELS_DIR = os.path.expanduser("~/AlphaModels")
 
 
+# 저장된 모델이 어떤 피처 세트로 학습됐는지 구분한다. 예전 모델은 이 키가 없으므로
+# 기본값이 legacy 다. 새 모델(alpha158)은 정규화된 76피처를 쓴다.
+LEGACY_FEATURE_SET = "legacy17"
+ALPHA158_FEATURE_SET = "alpha158"
+
 _MODEL_CACHE: dict = {}
 
 
@@ -56,16 +61,32 @@ def _load_model_and_features(horizon_name):
     saved = joblib.load(model_path)
     model = saved['model']
     features = _reconcile_features(model, list(saved['features']))
-    bundle = (model, features, saved['encoder'], saved['cat_cols'])
+    # 어떤 피처 빌더로 학습했는지. 없으면 예전 17피처 모델이다.
+    feature_set = saved.get('feature_set', LEGACY_FEATURE_SET)
+    bundle = (model, features, saved['encoder'], saved['cat_cols'], feature_set)
     _MODEL_CACHE[horizon_name] = (mtime, bundle)
     return bundle
 
 
-def _latest_feature_row(ticker, feature_columns, encoder, cat_cols):
+def _latest_feature_row(ticker, feature_columns, encoder, cat_cols,
+                        feature_set=LEGACY_FEATURE_SET):
     """최신 시점 피처 1행. 만들 수 없으면 None."""
     data = load_data(ticker)
     if data is None or len(data) < 50:
         return None
+
+    if feature_set == ALPHA158_FEATURE_SET:
+        from .features_alpha158 import build_features
+
+        feats = build_features(data).dropna()
+        if feats.empty:
+            return None
+        row = feats.tail(1)
+        missing = [c for c in feature_columns if c not in row.columns]
+        if missing:
+            print(f"경고: 모델이 기대하는 피처 {missing[:3]} 이(가) 없습니다.")
+            return None
+        return row[feature_columns]
 
     metadata = get_ticker_metadata([ticker])
     # target_days는 예측 시점에서 실제로 쓰이지 않지만 시그니처를 맞추기 위해 넘긴다.
@@ -92,9 +113,9 @@ def predict_proba_with_global_model(ticker, horizon_name="short"):
     bundle = _load_model_and_features(horizon_name)
     if bundle is None:
         return None
-    model, feature_columns, encoder, cat_cols = bundle
+    model, feature_columns, encoder, cat_cols, feature_set = bundle
 
-    row = _latest_feature_row(ticker, feature_columns, encoder, cat_cols)
+    row = _latest_feature_row(ticker, feature_columns, encoder, cat_cols, feature_set)
     if row is None:
         return None
 
