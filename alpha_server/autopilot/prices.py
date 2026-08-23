@@ -70,7 +70,13 @@ class HistoricalPrices(_BaseSource):
 
 
 class LivePrices(_BaseSource):
-    """yfinance 실시간 조회. at은 무시한다 (항상 최신)."""
+    """yfinance 실시간 조회. at은 무시한다 (항상 최신).
+
+    종목당 따로 호출하면 1.65초씩 걸려 150종목이 4분이다. 실시간 루프 주기가
+    5분이므로 한 사이클이 사실상 끝나지 않는다. get_many 는 배치로 받는다.
+    """
+
+    BATCH_SIZE = 60
 
     def __init__(self, rate_provider: Callable[[], float] | None = None) -> None:
         self._rate_provider = rate_provider or (lambda: fx.usd_krw_rate(None))
@@ -78,6 +84,9 @@ class LivePrices(_BaseSource):
 
     def clear_cache(self) -> None:
         self._cache.clear()
+
+    def _to_base(self, ticker: str, native: float) -> float:
+        return fx.to_krw(native, fx.native_currency(ticker), self._rate_provider())
 
     def get(self, ticker: str, at: datetime) -> float | None:
         if ticker in self._cache:
@@ -91,6 +100,55 @@ class LivePrices(_BaseSource):
             native = float(hist["Close"].iloc[-1])
         except Exception:
             return None
-        price = fx.to_krw(native, fx.native_currency(ticker), self._rate_provider())
+        price = self._to_base(ticker, native)
         self._cache[ticker] = price
         return price
+
+    def get_many(self, tickers: list[str], at: datetime) -> dict[str, float]:
+        """배치 다운로드. 실패한 청크는 종목별 조회로 폴백한다."""
+        import yfinance as yf
+
+        out: dict[str, float] = {}
+        pending: list[str] = []
+        for t in tickers:
+            if t in self._cache:
+                out[t] = self._cache[t]
+            else:
+                pending.append(t)
+
+        for start in range(0, len(pending), self.BATCH_SIZE):
+            chunk = pending[start:start + self.BATCH_SIZE]
+            try:
+                raw = yf.download(
+                    tickers=chunk, period="1d", interval="1d",
+                    group_by="ticker", auto_adjust=True,
+                    progress=False, threads=True,
+                )
+            except Exception as exc:
+                print(f"실시간 배치 조회 실패({len(chunk)}종목), 개별 조회로 폴백: {exc}")
+                raw = None
+
+            if raw is None or raw.empty:
+                for t in chunk:
+                    price = self.get(t, at)
+                    if price is not None:
+                        out[t] = price
+                continue
+
+            for t in chunk:
+                try:
+                    if isinstance(raw.columns, pd.MultiIndex):
+                        if t not in raw.columns.get_level_values(0):
+                            continue
+                        series = raw[t]["Close"].dropna()
+                    else:
+                        series = raw["Close"].dropna()
+                    if series.empty:
+                        continue
+                    price = self._to_base(t, float(series.iloc[-1]))
+                    self._cache[t] = price
+                    out[t] = price
+                except Exception:
+                    continue
+
+        return out

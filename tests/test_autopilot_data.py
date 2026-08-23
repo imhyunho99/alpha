@@ -377,3 +377,79 @@ def test_bundle_reports_alpha158_when_saved(tmp_path, monkeypatch):
     gmp.clear_model_cache()
 
     assert gmp._load_model_and_features("mid")[4] == gmp.ALPHA158_FEATURE_SET
+
+
+# --- 실시간 가격 배치 조회 ---
+
+def test_live_prices_batches_instead_of_per_ticker(monkeypatch):
+    """종목당 1.65초면 150종목이 4분이다. 5분 주기 루프가 끝나지 않는다."""
+    from datetime import datetime, timezone
+
+    import pandas as pd
+
+    from alpha_server.autopilot.prices import LivePrices
+
+    calls = []
+
+    def fake_download(tickers=None, **kwargs):
+        calls.append(list(tickers))
+        cols = pd.MultiIndex.from_product([tickers, ["Close"]])
+        idx = pd.DatetimeIndex(["2026-08-23"])
+        return pd.DataFrame(100.0, index=idx, columns=cols)
+
+    import yfinance as yf
+    monkeypatch.setattr(yf, "download", fake_download)
+
+    src = LivePrices(rate_provider=lambda: 1000.0)
+    src.BATCH_SIZE = 3
+    out = src.get_many([f"T{i}" for i in range(7)], datetime.now(timezone.utc))
+
+    assert len(out) == 7
+    assert [len(c) for c in calls] == [3, 3, 1]     # 개별 7회가 아니라 배치 3회
+    assert out["T0"] == 100.0 * 1000.0              # USD → KRW 환산 적용
+
+
+def test_live_prices_reuses_cache_across_calls(monkeypatch):
+    from datetime import datetime, timezone
+
+    import pandas as pd
+    import yfinance as yf
+
+    from alpha_server.autopilot.prices import LivePrices
+
+    calls = []
+
+    def fake_download(tickers=None, **kwargs):
+        calls.append(list(tickers))
+        cols = pd.MultiIndex.from_product([tickers, ["Close"]])
+        return pd.DataFrame(50.0, index=pd.DatetimeIndex(["2026-08-23"]), columns=cols)
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    src = LivePrices(rate_provider=lambda: 1.0)
+    at = datetime.now(timezone.utc)
+
+    src.get_many(["A", "B"], at)
+    src.get_many(["A", "B"], at)
+    assert len(calls) == 1, "캐시된 종목을 다시 받고 있습니다"
+
+
+def test_live_prices_falls_back_when_batch_returns_nothing(monkeypatch):
+    from datetime import datetime, timezone
+
+    import pandas as pd
+    import yfinance as yf
+
+    from alpha_server.autopilot.prices import LivePrices
+
+    monkeypatch.setattr(yf, "download", lambda tickers=None, **k: pd.DataFrame())
+
+    class _T:
+        def __init__(self, sym):
+            self.sym = sym
+
+        def history(self, **k):
+            return pd.DataFrame({"Close": [7.0]}, index=pd.DatetimeIndex(["2026-08-23"]))
+
+    monkeypatch.setattr(yf, "Ticker", _T)
+    src = LivePrices(rate_provider=lambda: 1.0)
+    assert src.get_many(["A"], datetime.now(timezone.utc)) == {"A": 7.0}
