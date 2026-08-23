@@ -34,12 +34,19 @@ def run_backtest(
     frames: dict,
     start: datetime,
     end: datetime,
-    prob_fn,
-    score_fn,
+    prob_fn=None,
+    score_fn=None,
     horizon: str = "medium",
     rates=None,
     step_days: int = 1,
+    signal_table=None,
 ) -> BacktestResult:
+    """과거 데이터로 온도 프로파일을 굴린다.
+
+    signal_table 을 주면 그 시점의 신호만 조회한다 (권장). prob_fn/score_fn 을
+    직접 주는 경로는 테스트용이다 — 실제 예측 함수는 항상 최신 데이터를 보므로
+    백테스트에 그대로 넣으면 look-ahead 편향이 생긴다.
+    """
     profile = profile_for(temperature)
     account = PaperAccount(cash=initial_capital)
     # rates가 None이면 기간 전체의 시점별 환율을 직접 가져온다
@@ -51,6 +58,13 @@ def run_backtest(
     clock = BacktestClock(start, end, step_days=step_days)
     journal = Journal(actor="backtest", mirror_audit=False)
     tickers = list(frames)
+
+    if signal_table is not None:
+        # 시계에 묶인 조회 함수 — 매 스텝 그 시점의 신호만 본다
+        prob_fn = signal_table.prob_fn_for(clock)
+        score_fn = signal_table.score_fn_for(clock)
+    if prob_fn is None or score_fn is None:
+        raise ValueError("signal_table 또는 prob_fn/score_fn 중 하나는 있어야 합니다")
 
     result = BacktestResult()
     last_rebalance: datetime | None = None

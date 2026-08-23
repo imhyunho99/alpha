@@ -128,28 +128,24 @@ def get_state(user: UserPublic = Depends(require_user)):
 )
 def post_backtest(payload: BacktestPayload, user: UserPublic = Depends(require_user)):
     from ..data_handler import download_many
-    from ..global_model_predictor import predict_proba_with_global_model
-    from ..scoring_engine import calculate_scores
     from . import fx
+    from .signals import build_signal_table
 
     profile = profile_for(payload.temperature)
     # 티어를 가로질러 뽑는다 — 머리부터 자르면 온도 10에서도 코인이 안 들어간다
     tickers = universe.sample_across_tiers(profile.universe_tiers, 60)
     frames = download_many(tickers, period=f"{payload.years}y")
 
-    def score_fn(ticker: str, horizon: str):
-        try:
-            scores = calculate_scores(ticker)
-            return None if not scores else scores.get(horizon)
-        except Exception:
-            return None
+    # 점 시점 신호 — 예측 함수를 직접 넣으면 매 스텝이 최신 데이터를 보게 되어
+    # 미래를 참조한 곡선이 나온다. 미리 시계열로 만들어 두고 조회만 한다.
+    signal_table = build_signal_table(frames, horizon="medium")
 
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=365 * payload.years)
     result = run_backtest(
         temperature=payload.temperature, initial_capital=payload.capital,
         frames=frames, start=start, end=end,
-        prob_fn=predict_proba_with_global_model, score_fn=score_fn,
+        signal_table=signal_table,
         horizon="medium",
         rates=fx.usd_krw_series(start, end),   # 시점별 환율
     )
