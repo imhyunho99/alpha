@@ -88,6 +88,21 @@ cat > "$PLIST" <<PLIST_EOF
     <key>ThrottleInterval</key>
     <integer>30</integer>
 
+    <!-- yfinance 가 타임존 캐시 SQLite 핸들을 누수시킨다. 실측: 907종목을 받은 뒤
+         tkr-tz.db 를 226개 열어둔 채로 fd 가 고갈됐고(기본 한도 256), 서버가
+         [Errno 24] Too many open files 로 HTTP 연결조차 못 받게 됐다.
+         코드 쪽에서도 막지만 한도 자체를 넉넉히 둔다. -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>8192</integer>
+    </dict>
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>16384</integer>
+    </dict>
+
     <key>StandardOutPath</key>
     <string>${LOG_DIR}/AlphaServer.log</string>
     <key>StandardErrorPath</key>

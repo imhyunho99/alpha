@@ -1,3 +1,6 @@
 {"timestamp": "2026-02-19T12:38:25.035057", "ticker": "AAPL", "prediction": "UP", "confidence": 1.0, "technical": "UP", "news": "UP", "method": "ensemble", "current_price": 263.8800048828125}
 {"timestamp": "2026-02-19T12:38:25.142229", "ticker": "MSFT", "prediction": "UP", "confidence": 0.7, "technical": "UP", "news": "N/A", "method": "technical_only", "current_price": 0.9651781320571899}
 {"timestamp": "2026-02-19T12:38:25.179937", "ticker": "GOOGL", "prediction": "UP", "confidence": 0.7, "technical": "UP", "news": "N/A", "method": "technical_only", "current_price": 2.185960693168454e-05}
+{"timestamp": "2026-08-23T23:59:35.412228", "ticker": "AAPL", "prediction": "DOWN", "confidence": 0.2, "technical": "DOWN", "news": "UP", "method": "ensemble", "current_price": 309.3500061035156}
+{"timestamp": "2026-08-23T23:59:35.471761", "ticker": "MSFT", "prediction": "DOWN", "confidence": 0.6, "technical": "DOWN", "news": "N/A", "method": "ensemble", "current_price": 483.239990234375}
+{"timestamp": "2026-08-23T23:59:35.565363", "ticker": "GOOGL", "prediction": "DOWN", "confidence": 0.6, "technical": "DOWN", "news": "N/A", "method": "ensemble", "current_price": 344.82000732421875}

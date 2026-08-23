@@ -72,6 +72,9 @@ def test_label_function_agrees_with_probability(monkeypatch):
 
 
 def test_download_many_splits_into_chunks(monkeypatch):
+    # 청크 사이 간격을 실제로 자면 테스트가 느려진다. 간격 자체의 검증은
+    # tests/test_download_backoff.py 담당.
+    monkeypatch.setattr(data_handler.time, "sleep", lambda sec: None)
     seen_chunks = []
 
     def fake_download(tickers=None, period=None, interval=None, group_by=None,
@@ -92,6 +95,9 @@ def test_download_many_splits_into_chunks(monkeypatch):
 
 
 def test_download_many_survives_a_failing_chunk(monkeypatch):
+    # 실패한 청크는 2/4/8초 백오프로 재시도한다 — 여기서 진짜로 자면 안 된다.
+    monkeypatch.setattr(data_handler.time, "sleep", lambda sec: None)
+
     def flaky(tickers=None, **kwargs):
         if "BAD" in tickers:
             raise RuntimeError("yfinance exploded")

@@ -19,6 +19,14 @@ DB_USER = os.getenv("DB_USER", "admin")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "quest")
 TABLE_NAME = "stock_prices"
 
+# 대량 다운로드 튜닝 — 100개씩 threads=True로 쉬지 않고 받으면 파일 디스크립터가
+# 고갈되고 야후가 레이트 리밋을 건다. 907종목 실측에서 78/100 -> 29/100 -> 0/100.
+DOWNLOAD_CHUNK_SIZE = 40
+DOWNLOAD_CHUNK_PAUSE_SEC = 1.5
+DOWNLOAD_MAX_RETRIES = 3
+DOWNLOAD_BACKOFF_BASE_SEC = 2.0
+DOWNLOAD_MAX_CONSECUTIVE_FAILURES = 3
+
 # CSV 폴백 디렉토리
 CSV_DIR = os.path.join(os.path.dirname(__file__), "market_data")
 os.makedirs(CSV_DIR, exist_ok=True)
@@ -295,15 +303,10 @@ def update_all_data():
 
     print(f"--- 총 {success_count}/{len(tickers)}개 자산 데이터 업데이트 완료 ---")
 
-def download_many(tickers, period="5y", interval="1d", chunk_size=100):
-    """여러 종목을 배치로 내려받는다. {ticker: DataFrame} 반환.
-
-    한 청크가 실패해도 나머지는 살린다 — 900종목 중 몇 개 때문에
-    전체가 죽으면 안 된다.
-    """
-    result = {}
-    for start in range(0, len(tickers), chunk_size):
-        chunk = tickers[start:start + chunk_size]
+def _download_chunk(chunk, period, interval):
+    """청크 하나를 지수 백오프로 재시도하며 받는다. 끝내 실패하면 None."""
+    delay = DOWNLOAD_BACKOFF_BASE_SEC
+    for attempt in range(DOWNLOAD_MAX_RETRIES + 1):
         try:
             raw = yf.download(
                 tickers=chunk,
@@ -314,12 +317,60 @@ def download_many(tickers, period="5y", interval="1d", chunk_size=100):
                 progress=False,
                 threads=True,
             )
+            if raw is not None and not raw.empty:
+                return raw
+            reason = "빈 결과"
         except Exception as exc:
-            print(f"배치 다운로드 실패 {chunk[:3]}... ({len(chunk)}종목): {exc}")
+            reason = f"{type(exc).__name__}: {exc}"
+
+        if attempt >= DOWNLOAD_MAX_RETRIES:
+            print(
+                f"배치 다운로드 포기 {chunk[:3]}... ({len(chunk)}종목) — "
+                f"{DOWNLOAD_MAX_RETRIES}회 재시도 실패 ({reason})"
+            )
+            return None
+
+        print(
+            f"배치 다운로드 재시도 {attempt + 1}/{DOWNLOAD_MAX_RETRIES} "
+            f"{chunk[:3]}... ({len(chunk)}종목) — {reason}, {delay:g}초 후"
+        )
+        time.sleep(delay)
+        delay *= 2
+    return None
+
+
+def download_many(tickers, period="5y", interval="1d", chunk_size=DOWNLOAD_CHUNK_SIZE):
+    """여러 종목을 배치로 내려받는다. {ticker: DataFrame} 반환.
+
+    한 청크가 실패해도 나머지는 살린다 — 900종목 중 몇 개 때문에
+    전체가 죽으면 안 된다. 청크를 작게 끊고 사이에 간격을 두는 이유는
+    파일 디스크립터 고갈과 야후 레이트 리밋 때문이다. 100개씩 쉬지 않고
+    두드리면 뒤로 갈수록 DNSError/SSLError로 무너진다.
+    """
+    result = {}
+    consecutive_failures = 0
+
+    for position, start in enumerate(range(0, len(tickers), chunk_size)):
+        chunk = tickers[start:start + chunk_size]
+
+        # 청크 사이 간격 — 첫 청크 앞에서는 기다릴 이유가 없다.
+        if position > 0 and DOWNLOAD_CHUNK_PAUSE_SEC > 0:
+            time.sleep(DOWNLOAD_CHUNK_PAUSE_SEC)
+
+        raw = _download_chunk(chunk, period, interval)
+        if raw is None:
+            consecutive_failures += 1
+            if consecutive_failures >= DOWNLOAD_MAX_CONSECUTIVE_FAILURES:
+                remaining = len(tickers) - (start + len(chunk))
+                print(
+                    f"배치 다운로드 중단: {consecutive_failures}개 청크 연속 실패 — "
+                    f"야후가 막은 것으로 보고 남은 {remaining}종목을 포기한다 "
+                    f"(확보: {len(result)}종목)"
+                )
+                break
             continue
 
-        if raw is None or raw.empty:
-            continue
+        consecutive_failures = 0
 
         for ticker in chunk:
             try:

@@ -8,7 +8,7 @@ import threading
 import time
 import asyncio
 
-from . import audit_log, credentials, data_handler
+from . import audit_log, credentials, data_handler, yf_session
 from .auth import (
     UserCreate,
     UserPublic,
@@ -352,9 +352,44 @@ def evaluate_strategy(sid: str, user: UserPublic = Depends(require_user)):
     return strategy_executor.evaluate_once(record)
 
 
+# fd 고갈은 조용히 온다. 소켓을 못 열게 된 뒤에는 헬스체크가 응답조차 못 하고,
+# 로그를 뒤져야 [Errno 24] 가 보인다. 아직 응답할 수 있을 때 사용률을 같이 실어 보낸다.
+FD_WARN_PCT = 0.8
+
+
+def _fd_snapshot() -> dict | None:
+    """{"open", "limit", "usage_pct"}. 측정할 수 없으면 None."""
+    try:
+        from .yf_session import fd_pressure  # 아직 없을 수 있는 모듈
+    except ImportError:
+        return None
+    try:
+        raw = fd_pressure()
+        if isinstance(raw, dict):
+            opened, limit = int(raw["open"]), int(raw["limit"])
+            pct = float(raw.get("usage_pct", opened / limit if limit else 0.0))
+        else:  # (open, limit) 형태도 받아준다
+            opened, limit = int(raw[0]), int(raw[1])
+            pct = opened / limit if limit else 0.0
+    except Exception:
+        # fd 를 못 재는 것이 헬스체크 자체를 죽이면 본말전도다.
+        return None
+    return {"open": opened, "limit": limit, "usage_pct": pct}
+
+
 @app.get("/health", summary="헬스체크")
 def health():
-    return {"status": "ok", "ts": datetime.datetime.utcnow().isoformat() + "Z"}
+    payload = {"status": "ok", "ts": datetime.datetime.utcnow().isoformat() + "Z"}
+    fd = _fd_snapshot()
+    if fd is not None:
+        payload["fd"] = fd
+        if fd["usage_pct"] > FD_WARN_PCT:
+            payload["status"] = "degraded"
+            payload["warning"] = (
+                f"파일 디스크립터 {fd['open']}/{fd['limit']} "
+                f"({fd['usage_pct'] * 100:.0f}%) 사용 중 — 고갈되면 HTTP 연결을 받지 못합니다"
+            )
+    return payload
 
 
 @app.get("/progress")
@@ -395,21 +430,20 @@ def update_all_data_with_progress():
         # 사실상 아무 일도 하지 않았다.
         from .data_handler import download_many, save_to_csv
 
-        CHUNK = 100
+        # 청킹·간격·백오프는 download_many 가 이미 한다. 여기서 또 쪼개면
+        # chunk_size 를 덮어써 그 안전장치가 무력화된다.
+        progress_status["data_update"]["message"] = f"{len(tickers)}종목 다운로드 중..."
+        frames = download_many(tickers, period="5y")
+
         saved = 0
-        for start in range(0, len(tickers), CHUNK):
-            chunk = tickers[start:start + CHUNK]
-            progress_status["data_update"]["current"] = min(start + CHUNK, len(tickers))
-            progress_status["data_update"]["message"] = (
-                f"{start + 1}~{min(start + CHUNK, len(tickers))} / {len(tickers)} 다운로드 중..."
-            )
-            for ticker, frame in download_many(chunk, period="5y", chunk_size=CHUNK).items():
-                if frame is not None and not frame.empty:
-                    try:
-                        save_to_csv(ticker, frame)
-                        saved += 1
-                    except Exception as exc:
-                        print(f"'{ticker}' 저장 실패: {exc}")
+        for ticker, frame in frames.items():
+            if frame is not None and not frame.empty:
+                try:
+                    save_to_csv(ticker, frame)
+                    saved += 1
+                    progress_status["data_update"]["current"] = saved
+                except Exception as exc:
+                    print(f"'{ticker}' 저장 실패: {exc}")
 
         progress_status["data_update"]["message"] = f"{saved}/{len(tickers)}종목 저장 완료"
         progress_status["data_update"]["status"] = "completed"
@@ -467,6 +501,18 @@ def auto_update_task():
 @app.on_event("startup")
 async def startup_event():
     global auto_update_thread, auto_update_running
+
+    # 반드시 맨 앞. yfinance 가 download 마다 타임존 캐시 SQLite 핸들을 누수시켜
+    # tkr-tz.db 가 226개까지 쌓였고, launchd 가 물려준 소프트 한도 256을 넘겨
+    # 서버가 [Errno 24] Too many open files 로 HTTP 연결조차 못 받은 적이 있다.
+    fd_soft = yf_session.raise_fd_limit()
+    yf_setup = yf_session.configure_yfinance()
+    fd_used, _, fd_ratio = yf_session.fd_pressure()
+    print(
+        f"🧯 fd 한도 {fd_soft} (현재 {fd_used}개 사용, {fd_ratio:.1%}) · "
+        f"yfinance {yf_setup.summary}"
+    )
+
     ensure_default_admin()
     auto_update_running = True
     auto_update_thread = threading.Thread(target=auto_update_task, daemon=True)
