@@ -239,12 +239,11 @@ def test_live_loop_reads_and_writes_only_its_own_portfolio(state_dir, monkeypatc
     def fake_step(**kwargs):
         seen.append(("step", kwargs["horizon"]))
 
-        class _Outcome:
-            fills = []
-            skipped = None
-            at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        # 실제 StepResult 계약을 그대로 쓴다. 스텁이 계약보다 좁으면
+        # 프로덕션 코드가 필드를 하나 더 읽는 순간 테스트가 헛돈다.
+        from alpha_server.autopilot.engine import StepResult
 
-        return _Outcome()
+        return StepResult(at=datetime(2026, 1, 1, tzinfo=timezone.utc), equity=1_000.0)
 
     monkeypatch.setattr(runner, "step", fake_step)
     monkeypatch.setattr(runner, "LivePrices", lambda: object())
@@ -297,3 +296,26 @@ def test_list_active_is_empty_without_state(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "STATE_DIR", str(tmp_path / "nope"))
     assert store.list_active() == []
     assert store.list_users() == []
+
+
+def test_live_step_logs_what_it_did(tmp_path, monkeypatch, capsys):
+    """무인 한 달 운용에서 '안 돌았다'와 '살 게 없었다'를 구분할 수 있어야 한다."""
+    from alpha_server.autopilot import runner, store
+    from alpha_server.autopilot.account import PaperAccount
+    from alpha_server.autopilot.engine import StepResult
+
+    monkeypatch.setattr(store, "STATE_DIR", str(tmp_path))
+    store.save_config("kim", {"temperature": 5, "capital": 1e7, "active": True}, "p1")
+
+    monkeypatch.setattr(runner.universe, "sample_across_tiers", lambda tiers, cap: ["A", "B"])
+    monkeypatch.setattr(runner, "_load_live_signals", lambda: ((lambda t, h: 0.9), (lambda t, h: 80.0)))
+    monkeypatch.setattr(
+        runner, "step",
+        lambda **kw: StepResult(at=None, equity=10_000_000.0, fills=[], skipped="cooldown"),
+    )
+
+    runner._live_once("kim", "p1")
+    out = capsys.readouterr().out
+    assert "autopilot kim/p1" in out
+    assert "건너뜀(cooldown)" in out
+    assert "유니버스 2" in out

@@ -143,14 +143,35 @@ def _live_once(username: str, portfolio: str = "default") -> None:
         last_rebalance = outcome.at
     store.save_account(username, account, last_rebalance, portfolio)
 
+    # 무인으로 한 달을 도는 루프다. 로그가 없으면 "돌았는데 살 게 없었다"와
+    # "아예 안 돌았다"를 구분할 수 없다.
+    buys = sum(1 for f in outcome.fills if f.side == "buy")
+    sells = len(outcome.fills) - buys
+    detail = f"매수 {buys} 매도 {sells}" if outcome.fills else "체결 없음"
+    if outcome.liquidated:
+        detail = "청산 발생"
+    elif outcome.skipped:
+        detail = f"건너뜀({outcome.skipped})"
+    print(
+        f"[autopilot {username}/{portfolio}] 온도 {profile.temperature} "
+        f"유니버스 {len(tickers)} · {detail} · "
+        f"보유 {len(account.positions)}종목 · 평가 {outcome.equity:,.0f}원",
+        flush=True,
+    )
+
 
 def _live_loop(username: str, portfolio: str = "default") -> None:
     stop = _live_stops.get((username, portfolio))
+    print(f"[autopilot {username}/{portfolio}] 루프 시작 "
+          f"(주기 {LIVE_INTERVAL_SEC}초)", flush=True)
     while stop is not None and not stop.is_set():
         try:
             _live_once(username, portfolio)
         except Exception as exc:
-            print(f"autopilot 실시간 루프 오류 ({username}/{portfolio}): {exc}")
+            import traceback
+
+            print(f"[autopilot {username}/{portfolio}] 오류: {exc}", flush=True)
+            traceback.print_exc()
         # stop_live가 신호를 주면 300초를 기다리지 않고 바로 깨어난다
         stop.wait(LIVE_INTERVAL_SEC)
 
