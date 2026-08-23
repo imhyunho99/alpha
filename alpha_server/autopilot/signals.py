@@ -19,8 +19,8 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-# scoring_engine 의 horizon 이름과 글로벌 모델 파일 이름의 대응
-_MODEL_HORIZON = {"short": "short", "medium": "mid", "long": "long"}
+# 매핑은 global_model_predictor 가 단일 진실이다. 두 곳에 두면 또 어긋난다.
+from ..global_model_predictor import normalize_horizon as _MODEL_HORIZON_OF
 
 
 def _as_utc_index(frame: pd.DataFrame) -> pd.DataFrame:
@@ -153,10 +153,10 @@ def build_signal_table(
     """모델을 한 번만 로드해 모든 티커의 신호 시리즈를 만든다."""
     from ..global_model_predictor import _load_model_and_features
 
-    bundle = _load_model_and_features(_MODEL_HORIZON.get(horizon, "mid"))
+    bundle = _load_model_and_features(_MODEL_HORIZON_OF(horizon))
     if bundle is None:
         raise RuntimeError(
-            f"글로벌 모델({_MODEL_HORIZON.get(horizon, 'mid')})이 없습니다. 먼저 학습하세요."
+            f"글로벌 모델({_MODEL_HORIZON_OF(horizon)})이 없습니다. 먼저 학습하세요."
         )
 
     # 깨진 시계열은 신호를 만들기 전에 버린다. USDE-USD 처럼 20일 수익률이

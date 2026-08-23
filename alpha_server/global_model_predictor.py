@@ -12,6 +12,17 @@ MODELS_DIR = os.path.expanduser("~/AlphaModels")
 
 # 저장된 모델이 어떤 피처 세트로 학습됐는지 구분한다. 예전 모델은 이 키가 없으므로
 # 기본값이 legacy 다. 새 모델(alpha158)은 정규화된 76피처를 쓴다.
+# scoring_engine 은 short/medium/long 을, 모델 파일은 short/mid/long 을 쓴다.
+# 이 어긋남 때문에 자동 운용이 predict_proba_with_global_model(t, "medium") 을
+# 부르고 global_medium_model.joblib 을 찾다 실패해, 진입 게이트가 항상 None 을
+# 받아 모든 종목이 걸러졌다. 매핑을 여기 한 곳에 둔다.
+HORIZON_ALIASES = {"medium": "mid", "mid": "mid", "short": "short", "long": "long"}
+
+
+def normalize_horizon(horizon_name: str) -> str:
+    return HORIZON_ALIASES.get(str(horizon_name).lower(), str(horizon_name))
+
+
 LEGACY_FEATURE_SET = "legacy17"
 ALPHA158_FEATURE_SET = "alpha158"
 
@@ -48,6 +59,7 @@ def _reconcile_features(model, features):
 
 def _load_model_and_features(horizon_name):
     """모델 번들을 로드한다. 없으면 None."""
+    horizon_name = normalize_horizon(horizon_name)
     model_path = os.path.join(MODELS_DIR, f"global_{horizon_name}_model.joblib")
     if not os.path.exists(model_path):
         return None

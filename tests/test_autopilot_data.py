@@ -484,3 +484,30 @@ def test_update_all_data_uses_batch_download(monkeypatch, tmp_path):
 
     assert batched == [["A", "B", "C"]]
     assert individual == [], "개별 다운로드로 되돌아갔습니다"
+
+
+# --- horizon 이름 별칭 ---
+
+def test_medium_resolves_to_the_mid_model():
+    """scoring_engine 은 'medium', 모델 파일은 'mid'. 이 어긋남이 진입 게이트를 죽였다."""
+    from alpha_server.global_model_predictor import normalize_horizon
+
+    assert normalize_horizon("medium") == "mid"
+    assert normalize_horizon("mid") == "mid"
+    assert normalize_horizon("short") == "short"
+    assert normalize_horizon("long") == "long"
+
+
+def test_loader_accepts_medium(tmp_path, monkeypatch):
+    import joblib
+
+    from alpha_server import global_model_predictor as gmp
+
+    monkeypatch.setattr(gmp, "MODELS_DIR", str(tmp_path))
+    joblib.dump({"model": "M", "features": ["a"], "encoder": None, "cat_cols": []},
+                tmp_path / "global_mid_model.joblib")
+    gmp.clear_model_cache()
+
+    assert gmp._load_model_and_features("medium") is not None, (
+        "'medium' 이 mid 모델로 해석되지 않으면 자동 운용이 아무것도 못 산다"
+    )
