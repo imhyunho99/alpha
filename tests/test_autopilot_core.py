@@ -16,7 +16,7 @@ def test_anchor_temperatures_match_spec():
     assert p1.cash_floor_pct == 70
     assert p1.max_position_pct == 3
     assert p1.max_holdings == 5
-    assert p1.min_confidence == 0.60
+    assert p1.min_confidence == 0.65
     assert p1.max_leverage == 1.0
 
     p5 = profile_for(5)
@@ -230,7 +230,7 @@ def test_min_confidence_is_reachable_by_the_model():
     한 건도 거래하지 못했다. 어떤 온도의 문턱도 그 영역에 있으면 안 된다.
     """
     for t in range(1, 11):
-        assert profile_for(t).min_confidence <= 0.70, (
+        assert profile_for(t).min_confidence <= 0.68, (
             f"온도 {t}의 min_confidence 가 모델이 거의 도달 못 하는 영역입니다"
         )
 
