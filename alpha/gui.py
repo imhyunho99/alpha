@@ -3,12 +3,13 @@ import json
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTextEdit, QFileDialog, QMessageBox,
-    QGroupBox, QStatusBar, QComboBox, QProgressBar, QDialog
+    QGroupBox, QStatusBar, QComboBox, QProgressBar, QDialog, QTabWidget
 )
 from PySide6.QtCore import Slot, QThread, Signal, QTimer
 from PySide6.QtGui import QFont, QAction
 
 from alpha import core
+from alpha.autopilot_widgets import AutopilotTab
 from alpha.strategy_widgets import ApiKeyDialog, LoginDialog, StrategyChatTab
 
 class WorkerThread(QThread):
@@ -43,8 +44,7 @@ class AlphaGUI(QMainWindow):
         self.progress_timer.timeout.connect(self.check_progress)
         self.progress_timer.setInterval(2000)  # 2초마다 체크
 
-        # 탭 구조: 분석 / 전략 채팅 / 자격증명
-        from PySide6.QtWidgets import QTabWidget
+        # 탭 구조: 분석 / 자동 운용 / 전략 채팅
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
@@ -57,7 +57,11 @@ class AlphaGUI(QMainWindow):
         self.create_result_box(main_layout)
         self.tabs.addTab(analysis_widget, "📈 분석/추천")
 
-        # 탭 2: 전략 채팅
+        # 탭 2: 온도 다이얼 자동 운용
+        self.autopilot_tab = AutopilotTab()
+        self.tabs.addTab(self.autopilot_tab, "🤖 자동 운용")
+
+        # 탭 3: 전략 채팅
         self.strategy_tab = StrategyChatTab()
         self.tabs.addTab(self.strategy_tab, "💬 전략 채팅")
 
@@ -241,9 +245,10 @@ class AlphaGUI(QMainWindow):
         result_layout.addWidget(self.result_text)
         
     def create_status_bar(self):
-        self.statusBar = QStatusBar()
-        self.setStatusBar(self.statusBar)
-        self.statusBar.showMessage("준비 완료. 먼저 서버를 실행하세요.")
+        # self.statusBar 로 대입하면 QMainWindow.statusBar() 메서드를 가려서
+        # self.statusBar() 호출부가 전부 TypeError 로 죽는다. 메서드만 쓴다.
+        self.setStatusBar(QStatusBar())
+        self.statusBar().showMessage("준비 완료. 먼저 서버를 실행하세요.")
 
     @Slot()
     def select_portfolio_file(self):
@@ -257,7 +262,7 @@ class AlphaGUI(QMainWindow):
         self.result_text.clear()
         self.progress_bar.setVisible(True)
         self.progress_label.setText("⏳ 작업 실행 중...")
-        self.statusBar.showMessage("⏳ 작업 실행 중...", 0)
+        self.statusBar().showMessage("⏳ 작업 실행 중...", 0)
         self.result_text.setPlainText("⏳ 서버에 요청 중입니다...\n잠시만 기다려주세요.")
         QApplication.processEvents()
         
@@ -280,7 +285,7 @@ class AlphaGUI(QMainWindow):
         if "error" in result:
             error_msg = result['error']
             self.result_text.setPlainText(f"❌ 오류가 발생했습니다:\n\n{error_msg}")
-            self.statusBar.showMessage("❌ 작업 실패", 5000)
+            self.statusBar().showMessage("❌ 작업 실패", 5000)
             
             # 서버 에러인 경우 추가 안내
             if "500" in error_msg or "Internal Server Error" in error_msg:
@@ -292,7 +297,7 @@ class AlphaGUI(QMainWindow):
         else:
             formatted_text = formatter(result)
             self.result_text.setPlainText(formatted_text)
-            self.statusBar.showMessage("✅ 작업 완료", 5000)
+            self.statusBar().showMessage("✅ 작업 완료", 5000)
     
     def _on_task_error(self, error_msg):
         """작업 에러 시 호출"""
@@ -301,7 +306,7 @@ class AlphaGUI(QMainWindow):
         
         error_text = f"❌ 오류가 발생했습니다:\n\n{error_msg}"
         self.result_text.setPlainText(error_text)
-        self.statusBar.showMessage("❌ 작업 실패", 5000)
+        self.statusBar().showMessage("❌ 작업 실패", 5000)
         
         # 연결 오류인 경우
         if "Connection refused" in error_msg or "Max retries" in error_msg:
@@ -364,7 +369,7 @@ class AlphaGUI(QMainWindow):
     @Slot()
     def run_check_status(self):
         self.progress_label.setText("⏳ 서버 상태 확인 중...")
-        self.statusBar.showMessage("⏳ 서버 상태 확인 중...", 0)
+        self.statusBar().showMessage("⏳ 서버 상태 확인 중...", 0)
         self._execute_and_display(core.check_server_status, self.format_default)
 
     @Slot()
@@ -372,7 +377,7 @@ class AlphaGUI(QMainWindow):
         self.progress_label.setText("⏳ 데이터 업데이트 시작...")
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
-        self.statusBar.showMessage("⏳ 데이터 업데이트 요청 중... (5-10분 소요)", 0)
+        self.statusBar().showMessage("⏳ 데이터 업데이트 요청 중... (5-10분 소요)", 0)
         self.result_text.setPlainText("⏳ 데이터 업데이트를 시작합니다...\n\n약 5-10분 정도 소요됩니다.\n\n위의 '작업 진행 상황'에서 실시간 진행률을 확인할 수 있습니다.")
         QApplication.processEvents()
         self.progress_timer.start()  # 진행 상황 체크 시작
@@ -383,7 +388,7 @@ class AlphaGUI(QMainWindow):
         self.progress_label.setText("⏳ 모델 학습 시작...")
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
-        self.statusBar.showMessage("⏳ 모델 재학습 요청 중... (10-20분 소요)", 0)
+        self.statusBar().showMessage("⏳ 모델 재학습 요청 중... (10-20분 소요)", 0)
         self.result_text.setPlainText("⏳ 모델 재학습을 시작합니다...\n\n약 10-20분 정도 소요됩니다.\n\n위의 '작업 진행 상황'에서 실시간 진행률을 확인할 수 있습니다.")
         QApplication.processEvents()
         self.progress_timer.start()  # 진행 상황 체크 시작
@@ -393,7 +398,7 @@ class AlphaGUI(QMainWindow):
     def run_get_recommendations(self):
         horizon = self.horizon_combo.currentText()
         self.progress_label.setText(f"⏳ {horizon} 기간 투자 추천 분석 중...")
-        self.statusBar.showMessage(f"⏳ {horizon} 기간 투자 추천 분석 중...", 0)
+        self.statusBar().showMessage(f"⏳ {horizon} 기간 투자 추천 분석 중...", 0)
         self._execute_and_display(core.get_recommendations, self.format_recommendations, horizon)
 
     @Slot()
@@ -402,7 +407,7 @@ class AlphaGUI(QMainWindow):
             QMessageBox.warning(self, "경고", "포트폴리오 파일을 먼저 선택해주세요.")
             return
         self.progress_label.setText("⏳ 포트폴리오 분석 중...")
-        self.statusBar.showMessage("⏳ 포트폴리오 분석 중...", 0)
+        self.statusBar().showMessage("⏳ 포트폴리오 분석 중...", 0)
         self._execute_and_display(core.assess_portfolio, self.format_assessment, self.portfolio_path)
 
 def start_gui():
