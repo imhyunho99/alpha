@@ -197,3 +197,42 @@ def test_historical_prices_returns_none_before_first_bar():
     frames = {"AAPL": _frame([datetime(2026, 1, 5, tzinfo=timezone.utc)], [100.0])}
     src = HistoricalPrices(frames, rates=1.0)
     assert src.get("AAPL", datetime(2026, 1, 1, tzinfo=timezone.utc)) is None
+
+
+# --- load_from_csv 방어 처리 ---
+
+def test_load_from_csv_drops_yfinance_multiheader_rows(tmp_path, monkeypatch):
+    """과거 저장분에 섞인 'Ticker' 행이 날짜 파싱을 깨뜨리면 안 된다."""
+    import pandas as pd
+
+    from alpha_server import data_handler
+
+    monkeypatch.setattr(data_handler, "CSV_DIR", str(tmp_path))
+    (tmp_path / "OLD.csv").write_text(
+        "Date,Open,Close\n"
+        "Ticker,OLD,OLD\n"
+        "2026-01-01,100,101\n"
+        "2026-01-02,102,103\n",
+        encoding="utf-8",
+    )
+
+    df = data_handler.load_from_csv("OLD")
+    assert df is not None
+    assert len(df) == 2
+    assert isinstance(df.index, pd.DatetimeIndex)
+    assert df["Close"].tolist() == [101.0, 103.0]
+
+
+def test_load_from_csv_returns_none_when_nothing_parses(tmp_path, monkeypatch):
+    from alpha_server import data_handler
+
+    monkeypatch.setattr(data_handler, "CSV_DIR", str(tmp_path))
+    (tmp_path / "JUNK.csv").write_text("Date,Close\nTicker,JUNK\n", encoding="utf-8")
+    assert data_handler.load_from_csv("JUNK") is None
+
+
+def test_load_from_csv_returns_none_for_missing_file(tmp_path, monkeypatch):
+    from alpha_server import data_handler
+
+    monkeypatch.setattr(data_handler, "CSV_DIR", str(tmp_path))
+    assert data_handler.load_from_csv("NOPE") is None

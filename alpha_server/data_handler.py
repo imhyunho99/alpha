@@ -82,15 +82,34 @@ def save_to_csv(ticker, data):
     print(f"성공: '{ticker}' 데이터를 {csv_path}에 저장했습니다.")
 
 def load_from_csv(ticker):
-    """CSV 파일에서 데이터를 로드합니다."""
+    """CSV 파일에서 데이터를 로드합니다.
+
+    과거에 저장된 일부 파일은 yfinance 다중 헤더 잔재를 갖고 있어
+    인덱스 첫 행이 날짜가 아니라 'Ticker' 같은 문자열이다. 그런 행은
+    날짜 파싱에 실패하므로 걸러내고, 값 컬럼도 숫자로 강제한다.
+    """
     csv_path = os.path.join(CSV_DIR, f"{ticker}.csv")
     if not os.path.exists(csv_path):
         return None
     try:
-        df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
-        return df
+        df = pd.read_csv(csv_path, index_col=0)
     except Exception as e:
         print(f"오류: CSV 파일 로드 실패: {e}")
+        return None
+
+    try:
+        df.index = pd.to_datetime(df.index, errors="coerce", utc=False)
+        df = df[df.index.notna()]
+
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(how="all")
+
+        if df.empty:
+            return None
+        return df.sort_index()
+    except Exception as e:
+        print(f"오류: '{ticker}' CSV 정규화 실패: {e}")
         return None
 
 import socket
