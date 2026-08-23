@@ -86,10 +86,13 @@ def test_build_signal_table_skips_empty_frames(monkeypatch):
     monkeypatch.setattr(
         "alpha_server.market_features.get_ticker_metadata", lambda tickers, *a, **k: {}
     )
-    idx = pd.date_range("2026-01-01", periods=3, freq="D", tz="UTC")
+    idx = pd.date_range("2024-01-01", periods=400, freq="B", tz="UTC")
+    rng = np.random.default_rng(4)
     frames = {
         "EMPTY": pd.DataFrame(),
-        "A": pd.DataFrame({"Close": [1.0, 2.0, 3.0]}, index=idx),
+        "A": pd.DataFrame(
+            {"Close": 100 * np.cumprod(1 + rng.normal(0.0004, 0.015, 400))}, index=idx
+        ),
     }
     table = signals.build_signal_table(frames)
     assert table.probabilities == {}
@@ -124,10 +127,53 @@ def test_build_signal_table_fetches_metadata_once(monkeypatch):
 
     monkeypatch.setattr(signals, "_probability_series", fake_prob)
 
-    idx = pd.date_range("2026-01-01", periods=3, freq="D", tz="UTC")
-    frames = {t: pd.DataFrame({"Close": [1.0, 2.0, 3.0]}, index=idx) for t in ("A", "B", "C")}
+    # 위생 검사를 통과할 만큼 긴 시계열이어야 한다 (최소 260행)
+    idx = pd.date_range("2024-01-01", periods=400, freq="B", tz="UTC")
+    rng = np.random.default_rng(2)
+    frames = {
+        t: pd.DataFrame(
+            {"Close": 100 * np.cumprod(1 + rng.normal(0.0004, 0.015, 400))}, index=idx
+        )
+        for t in ("A", "B", "C")
+    }
     signals.build_signal_table(frames)
 
     assert len(calls) == 1                 # 네트워크는 한 번만
     assert set(calls[0]) == {"A", "B", "C"}
     assert all(m is not None for _, m in seen)  # 같은 메타데이터를 재사용
+
+
+def test_build_signal_table_drops_corrupt_series(monkeypatch):
+    """USDE-USD 같은 깨진 시계열이 신호로 넘어가면 자동 운용이 그걸 산다."""
+    monkeypatch.setattr(
+        "alpha_server.global_model_predictor._load_model_and_features",
+        lambda horizon: ("model", ["f"], None, []),
+    )
+    monkeypatch.setattr(
+        "alpha_server.market_features.get_ticker_metadata", lambda tickers, *a, **k: {}
+    )
+
+    seen = []
+
+    def fake_prob(ticker, frame, bundle, metadata=None):
+        seen.append(ticker)
+        return pd.Series([0.6], index=pd.DatetimeIndex(["2026-01-01"], tz="UTC"))
+
+    monkeypatch.setattr(signals, "_probability_series", fake_prob)
+
+    idx = pd.date_range("2024-01-01", periods=400, freq="B")
+    rng = np.random.default_rng(5)
+    good = pd.DataFrame({"Close": 100 * np.cumprod(1 + rng.normal(0.0004, 0.015, 400))}, index=idx)
+
+    broken = good.copy()
+    broken.iloc[200, 0] *= 5000.0
+    broken.iloc[201, 0] /= 5000.0
+
+    table = signals.build_signal_table({
+        "GOOD": good,
+        "BROKEN": broken,
+        "USDE-USD": good.copy(),   # 스테이블코인
+    })
+
+    assert seen == ["GOOD"]
+    assert set(table.probabilities) == {"GOOD"}

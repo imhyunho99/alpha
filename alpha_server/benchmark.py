@@ -139,7 +139,13 @@ def rank_ic(scores: pd.Series, forward: pd.Series, dates: pd.Series) -> pd.Serie
 
 
 def decile_spread(scores: pd.Series, forward: pd.Series, dates: pd.Series) -> float:
-    """상위 10분위 평균 수익률 − 하위 10분위 평균 수익률."""
+    """상위 10분위 − 하위 10분위 수익률 차이. **중앙값** 기준.
+
+    평균을 쓰면 깨진 시계열 하나가 지표를 통째로 뒤집는다. 실제로 USDE-USD 의
+    20일 수익률 +4,799,376% 하나 때문에 스프레드가 -703% 로 찍혔다. 데이터
+    위생 검사(alpha_server/data_quality.py)로 걸러내지만, 지표 자체도 이런
+    꼬리에 흔들리지 않아야 한다.
+    """
     df = pd.DataFrame({"score": scores, "fwd": forward, "date": dates}).dropna()
     tops: list[float] = []
     bots: list[float] = []
@@ -148,11 +154,11 @@ def decile_spread(scores: pd.Series, forward: pd.Series, dates: pd.Series) -> fl
             continue
         k = max(1, len(chunk) // 10)
         ranked = chunk.sort_values("score")
-        bots.append(ranked["fwd"].iloc[:k].mean())
-        tops.append(ranked["fwd"].iloc[-k:].mean())
+        bots.append(ranked["fwd"].iloc[:k].median())
+        tops.append(ranked["fwd"].iloc[-k:].median())
     if not tops:
         return float("nan")
-    return float(np.mean(tops) - np.mean(bots))
+    return float(np.median(tops) - np.median(bots))
 
 
 @dataclass

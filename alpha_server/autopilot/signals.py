@@ -139,6 +139,12 @@ def build_signal_table(
             f"글로벌 모델({_MODEL_HORIZON.get(horizon, 'mid')})이 없습니다. 먼저 학습하세요."
         )
 
+    # 깨진 시계열은 신호를 만들기 전에 버린다. USDE-USD 처럼 20일 수익률이
+    # +4,799,376% 로 찍히는 종목이 실제로 있고, 그대로 두면 자동 운용이 그걸 산다.
+    from ..data_quality import filter_frames
+
+    frames = filter_frames(frames)
+
     # 메타데이터는 티커마다 네트워크를 타므로 한 번에 받는다. 종목별로 부르면
     # 125종목 백테스트가 125번 왕복한다.
     from ..market_features import get_ticker_metadata
