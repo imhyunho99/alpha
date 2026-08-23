@@ -95,12 +95,38 @@ def load_account(username: str, portfolio: str = DEFAULT_PORTFOLIO):
     return acct, (datetime.fromisoformat(last) if last else None)
 
 
+def load_tracked_at(username: str, portfolio: str = DEFAULT_PORTFOLIO):
+    """엔진이 마지막으로 여기까지 봤다는 시각. 없으면 None.
+
+    load_account 의 (account, last_rebalance) 계약을 깨지 않으려고 따로 둔다.
+    """
+    try:
+        with open(_path(username, "account", portfolio), encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    stamp = raw.get("last_tracked_at")
+    if not stamp:
+        return None
+    try:
+        return datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+
+
 def save_account(
     username: str,
     account: PaperAccount,
     last_rebalance: datetime | None,
     portfolio: str = DEFAULT_PORTFOLIO,
+    last_tracked_at: datetime | None = None,
 ) -> None:
+    """계좌 상태를 저장한다.
+
+    last_tracked_at 은 last_rebalance 와 다른 값이다. 전자는 "엔진이 여기까지
+    봤다"는 심장박동이고, 후자는 쿨다운 기준점이다. 맥이 꺼져 있던 구간을
+    나중에 재생하려면 전자가 필요하다.
+    """
     payload = {
         "cash": account.cash,
         "borrowed": account.borrowed,
@@ -109,6 +135,7 @@ def save_account(
             for t, p in account.positions.items()
         },
         "last_rebalance": last_rebalance.isoformat() if last_rebalance else None,
+        "last_tracked_at": last_tracked_at.isoformat() if last_tracked_at else None,
     }
     with open(_path(username, "account", portfolio), "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
