@@ -1,6 +1,7 @@
 import json
 import os
 from typing import Optional
+from urllib.parse import urlencode
 
 import requests
 
@@ -181,24 +182,48 @@ def train_model():
 
 # --- Autopilot (온도 다이얼 모의 자동 운용) ---
 
-
-def autopilot_get_config():
-    return _handle_request("get", "/autopilot/config")
+DEFAULT_PORTFOLIO = "default"
 
 
-def autopilot_set_config(temperature: int, capital: float, active: bool):
+def _portfolio_query(portfolio: str, **extra) -> str:
+    """포트폴리오 이름은 한글도 허용되므로 반드시 인코딩해서 붙인다."""
+    params = {k: v for k, v in extra.items() if v is not None}
+    params["portfolio"] = portfolio or DEFAULT_PORTFOLIO
+    return "?" + urlencode(params)
+
+
+def autopilot_portfolios():
+    return _handle_request("get", "/autopilot/portfolios")
+
+
+def autopilot_get_config(portfolio: str = DEFAULT_PORTFOLIO):
+    return _handle_request("get", "/autopilot/config" + _portfolio_query(portfolio))
+
+
+def autopilot_set_config(
+    temperature: int,
+    capital: float,
+    active: bool,
+    portfolio: str = DEFAULT_PORTFOLIO,
+):
     return _handle_request(
         "put",
         "/autopilot/config",
-        json={"temperature": temperature, "capital": capital, "active": active},
+        json={
+            "temperature": temperature,
+            "capital": capital,
+            "active": active,
+            "portfolio": portfolio or DEFAULT_PORTFOLIO,
+        },
     )
 
 
-def autopilot_state():
-    return _handle_request("get", "/autopilot/state")
+def autopilot_state(portfolio: str = DEFAULT_PORTFOLIO):
+    return _handle_request("get", "/autopilot/state" + _portfolio_query(portfolio))
 
 
 def autopilot_backtest(temperature: int, capital: float, years: int = 3):
+    """백테스트는 저장된 계좌를 건드리지 않으므로 포트폴리오와 무관하다."""
     return _handle_request(
         "post",
         "/autopilot/backtest",
@@ -206,9 +231,11 @@ def autopilot_backtest(temperature: int, capital: float, years: int = 3):
     )
 
 
-def autopilot_briefing(period: str = "daily"):
-    return _handle_request("get", f"/autopilot/briefing?period={period}")
+def autopilot_briefing(period: str = "daily", portfolio: str = DEFAULT_PORTFOLIO):
+    return _handle_request(
+        "get", "/autopilot/briefing" + _portfolio_query(portfolio, period=period)
+    )
 
 
-def autopilot_alerts():
-    return _handle_request("get", "/autopilot/alerts")
+def autopilot_alerts(portfolio: str = DEFAULT_PORTFOLIO):
+    return _handle_request("get", "/autopilot/alerts" + _portfolio_query(portfolio))
