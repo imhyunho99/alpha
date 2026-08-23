@@ -274,5 +274,49 @@ def update_all_data():
     
     print(f"--- 총 {success_count}/{len(tickers)}개 자산 데이터 업데이트 완료 ---")
 
+def download_many(tickers, period="5y", interval="1d", chunk_size=100):
+    """여러 종목을 배치로 내려받는다. {ticker: DataFrame} 반환.
+
+    한 청크가 실패해도 나머지는 살린다 — 900종목 중 몇 개 때문에
+    전체가 죽으면 안 된다.
+    """
+    result = {}
+    for start in range(0, len(tickers), chunk_size):
+        chunk = tickers[start:start + chunk_size]
+        try:
+            raw = yf.download(
+                tickers=chunk,
+                period=period,
+                interval=interval,
+                group_by="ticker",
+                auto_adjust=True,
+                progress=False,
+                threads=True,
+            )
+        except Exception as exc:
+            print(f"배치 다운로드 실패 {chunk[:3]}... ({len(chunk)}종목): {exc}")
+            continue
+
+        if raw is None or raw.empty:
+            continue
+
+        for ticker in chunk:
+            try:
+                if isinstance(raw.columns, pd.MultiIndex):
+                    if ticker not in raw.columns.get_level_values(0):
+                        continue
+                    frame = raw[ticker].dropna(how="all")
+                else:
+                    frame = raw.dropna(how="all")
+                if not frame.empty:
+                    result[ticker] = frame
+            except Exception as exc:
+                print(f"'{ticker}' 프레임 추출 실패: {exc}")
+                continue
+
+    print(f"배치 다운로드 완료: {len(result)}/{len(tickers)} 종목")
+    return result
+
+
 if __name__ == '__main__':
     update_all_data()
