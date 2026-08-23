@@ -177,3 +177,38 @@ def fetch_market_data():
 
 def train_model():
     return update_server_models()
+
+
+# --- Autopilot (온도 다이얼 모의 자동 운용) ---
+
+
+def autopilot_get_config():
+    return _handle_request("get", "/autopilot/config")
+
+
+def autopilot_set_config(temperature: int, capital: float, active: bool):
+    return _handle_request(
+        "put",
+        "/autopilot/config",
+        json={"temperature": temperature, "capital": capital, "active": active},
+    )
+
+
+def autopilot_state():
+    return _handle_request("get", "/autopilot/state")
+
+
+def autopilot_backtest(temperature: int, capital: float, years: int = 3):
+    return _handle_request(
+        "post",
+        "/autopilot/backtest",
+        json={"temperature": temperature, "capital": capital, "years": years},
+    )
+
+
+def autopilot_briefing(period: str = "daily"):
+    return _handle_request("get", f"/autopilot/briefing?period={period}")
+
+
+def autopilot_alerts():
+    return _handle_request("get", "/autopilot/alerts")
