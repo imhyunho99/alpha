@@ -94,7 +94,8 @@ class LivePrices(_BaseSource):
         try:
             import yfinance as yf
 
-            hist = yf.Ticker(ticker).history(period="1d")
+            # 5일치를 보고 마지막 종가를 쓴다. period="1d" 는 휴장일에 빈다.
+            hist = yf.Ticker(ticker).history(period="5d")
             if hist is None or hist.empty:
                 return None
             native = float(hist["Close"].iloc[-1])
@@ -135,20 +136,34 @@ class LivePrices(_BaseSource):
                         out[t] = price
                 continue
 
+            # 배치가 부분 성공하는 경우가 흔하다. period="1d" 는 휴장일이나
+            # 상장 초기 종목에서 봉이 비거나 Close 가 NaN 이다. 예전 코드는 그런
+            # 종목을 조용히 버렸고(청크 전체가 실패했을 때만 폴백), 그 결과
+            # 보유 15종목 중 9개 가격이 없어 자동 운용이 매 사이클 건너뛰었다.
+            unresolved: list[str] = []
             for t in chunk:
                 try:
                     if isinstance(raw.columns, pd.MultiIndex):
                         if t not in raw.columns.get_level_values(0):
+                            unresolved.append(t)
                             continue
                         series = raw[t]["Close"].dropna()
                     else:
                         series = raw["Close"].dropna()
                     if series.empty:
+                        unresolved.append(t)
                         continue
                     price = self._to_base(t, float(series.iloc[-1]))
                     self._cache[t] = price
                     out[t] = price
                 except Exception:
-                    continue
+                    unresolved.append(t)
+
+            # 배치에서 빠진 종목만 개별로 다시 묻는다. 개별 조회는 period="1d"
+            # 대신 최근 며칠을 보므로 휴장일에도 마지막 종가를 얻는다.
+            for t in unresolved:
+                price = self.get(t, at)
+                if price is not None:
+                    out[t] = price
 
         return out

@@ -545,3 +545,50 @@ def test_progress_data_update_batches_and_saves(monkeypatch, tmp_path):
     assert batches, "배치 다운로드를 쓰지 않았습니다"
     assert sorted(saved) == [f"T{i}" for i in range(5)], "받은 데이터를 저장하지 않았습니다"
     assert server_main.progress_status["data_update"]["status"] == "completed"
+
+
+def test_live_prices_falls_back_for_tickers_missing_from_a_partial_batch():
+    """배치가 부분 성공하면 빠진 종목만 개별로 다시 물어야 한다.
+
+    실측: 휴장일에 period="1d" 배치가 일부 종목만 채워 보유 15종목 중 9개
+    가격이 없었고, 자동 운용이 매 사이클 건너뛰었다.
+    """
+    from datetime import datetime, timezone
+
+    import pandas as pd
+    import yfinance as yf
+
+    from alpha_server.autopilot.prices import LivePrices
+
+    def partial_download(tickers=None, **kwargs):
+        # A 만 값이 있고 B 는 전부 NaN — 흔한 부분 성공
+        cols = pd.MultiIndex.from_product([list(tickers), ["Close"]])
+        idx = pd.DatetimeIndex(["2026-08-23"])
+        df = pd.DataFrame(float("nan"), index=idx, columns=cols)
+        df[("A", "Close")] = 10.0
+        return df
+
+    asked = []
+
+    class _T:
+        def __init__(self, sym):
+            self.sym = sym
+
+        def history(self, **k):
+            asked.append(self.sym)
+            return pd.DataFrame({"Close": [7.0]}, index=pd.DatetimeIndex(["2026-08-23"]))
+
+    monkeypatch_targets = [(yf, "download", partial_download), (yf, "Ticker", _T)]
+    originals = [(o, n, getattr(o, n)) for o, n, _ in monkeypatch_targets]
+    for obj, name, value in monkeypatch_targets:
+        setattr(obj, name, value)
+    try:
+        src = LivePrices(rate_provider=lambda: 1.0)
+        out = src.get_many(["A", "B"], datetime.now(timezone.utc))
+    finally:
+        for obj, name, value in originals:
+            setattr(obj, name, value)
+
+    assert out["A"] == 10.0
+    assert out["B"] == 7.0, "배치에서 빠진 종목이 개별 폴백으로 채워지지 않았습니다"
+    assert asked == ["B"], "배치로 이미 받은 종목까지 개별 조회하고 있습니다"
