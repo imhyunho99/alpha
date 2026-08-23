@@ -251,3 +251,90 @@ def test_step_does_not_churn_when_already_at_target():
     result = _step(acct, 5, ["A"], {"A": 1000.0})
     assert result.fills == []
     assert acct.positions["A"].quantity == pytest.approx(before)
+
+
+# --- API ---
+
+@pytest.fixture
+def api_client(monkeypatch, tmp_path):
+    """HOME과 autopilot 상태 디렉터리를 완전히 격리한 TestClient."""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("ALPHA_JWT_SECRET", "test-secret-do-not-use-in-prod")
+
+    from importlib import reload
+
+    from alpha_server import audit_log, auth
+    reload(audit_log)
+    reload(auth)
+
+    from alpha_server.autopilot import store
+    monkeypatch.setattr(store, "STATE_DIR", str(tmp_path / "autopilot"))
+
+    from alpha_server.main import app
+    return TestClient(app)
+
+
+def _auth_header(client):
+    client.post("/auth/bootstrap", json={"username": "kim", "password": "StrongPass1!"})
+    r = client.post("/auth/login", data={"username": "kim", "password": "StrongPass1!"})
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+def test_autopilot_endpoints_require_auth(api_client):
+    for path in ("/autopilot/config", "/autopilot/state", "/autopilot/alerts"):
+        assert api_client.get(path).status_code == 401
+
+
+def test_config_roundtrip(api_client):
+    h = _auth_header(api_client)
+
+    assert api_client.get("/autopilot/config", headers=h).json()["temperature"] == 5
+
+    r = api_client.put(
+        "/autopilot/config", headers=h,
+        json={"temperature": 7, "capital": 10_000_000, "active": False},
+    )
+    assert r.status_code == 200
+    assert r.json()["temperature"] == 7
+
+    body = api_client.get("/autopilot/config", headers=h).json()
+    assert body["capital"] == 10_000_000
+    assert body["temperature"] == 7
+
+
+def test_config_rejects_out_of_range_temperature(api_client):
+    h = _auth_header(api_client)
+    r = api_client.put(
+        "/autopilot/config", headers=h,
+        json={"temperature": 99, "capital": 1000, "active": False},
+    )
+    assert r.status_code == 422
+
+
+def test_state_reports_equity_and_profile(api_client):
+    h = _auth_header(api_client)
+    api_client.put(
+        "/autopilot/config", headers=h,
+        json={"temperature": 5, "capital": 10_000_000, "active": False},
+    )
+
+    body = api_client.get("/autopilot/state", headers=h).json()
+    assert body["equity"] == 10_000_000
+    assert body["temperature"] == 5
+    assert body["return_pct"] == 0.0
+    assert body["holdings"] == []
+    assert "alerts" in body
+
+
+def test_briefing_is_quiet_with_no_activity(api_client):
+    h = _auth_header(api_client)
+    api_client.put(
+        "/autopilot/config", headers=h,
+        json={"temperature": 5, "capital": 10_000_000, "active": False},
+    )
+    body = api_client.get("/autopilot/briefing?period=daily", headers=h).json()
+    assert body["period"] == "daily"
+    assert body["buys"] == 0
+    assert body["headline"]
