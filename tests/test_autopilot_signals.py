@@ -75,11 +75,16 @@ def test_score_series_is_backward_looking_only():
 
 def test_build_signal_table_skips_empty_frames(monkeypatch):
     monkeypatch.setattr(
-        signals, "_probability_series", lambda ticker, frame, bundle: pd.Series(dtype="float64")
+        signals,
+        "_probability_series",
+        lambda ticker, frame, bundle, metadata=None: pd.Series(dtype="float64"),
     )
     monkeypatch.setattr(
         "alpha_server.global_model_predictor._load_model_and_features",
         lambda horizon: ("model", ["f"], None, []),
+    )
+    monkeypatch.setattr(
+        "alpha_server.market_features.get_ticker_metadata", lambda tickers, *a, **k: {}
     )
     idx = pd.date_range("2026-01-01", periods=3, freq="D", tz="UTC")
     frames = {
@@ -96,3 +101,33 @@ def test_build_signal_table_raises_without_model(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="글로벌 모델"):
         signals.build_signal_table({})
+
+
+def test_build_signal_table_fetches_metadata_once(monkeypatch):
+    """티커마다 부르면 125종목 백테스트가 네트워크를 125번 왕복한다."""
+    calls = []
+
+    def counting(tickers, *a, **k):
+        calls.append(list(tickers))
+        return {t: {} for t in tickers}
+
+    monkeypatch.setattr("alpha_server.market_features.get_ticker_metadata", counting)
+    monkeypatch.setattr(
+        "alpha_server.global_model_predictor._load_model_and_features",
+        lambda horizon: ("model", ["f"], None, []),
+    )
+    seen = []
+
+    def fake_prob(ticker, frame, bundle, metadata=None):
+        seen.append((ticker, metadata))
+        return pd.Series([0.6], index=pd.DatetimeIndex(["2026-01-01"], tz="UTC"))
+
+    monkeypatch.setattr(signals, "_probability_series", fake_prob)
+
+    idx = pd.date_range("2026-01-01", periods=3, freq="D", tz="UTC")
+    frames = {t: pd.DataFrame({"Close": [1.0, 2.0, 3.0]}, index=idx) for t in ("A", "B", "C")}
+    signals.build_signal_table(frames)
+
+    assert len(calls) == 1                 # 네트워크는 한 번만
+    assert set(calls[0]) == {"A", "B", "C"}
+    assert all(m is not None for _, m in seen)  # 같은 메타데이터를 재사용

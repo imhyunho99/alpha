@@ -34,17 +34,19 @@ def _as_utc_index(frame: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _probability_series(ticker: str, frame: pd.DataFrame, bundle) -> pd.Series:
+def _probability_series(ticker: str, frame: pd.DataFrame, bundle, metadata=None) -> pd.Series:
     """전체 기간의 상승 확률. 각 행은 그 시점까지의 정보만으로 만들어진 피처다."""
     from ..global_model_handler import create_global_features_and_target
-    from ..market_features import get_ticker_metadata
 
     model, feature_columns, encoder, cat_cols = bundle
 
-    try:
-        metadata = get_ticker_metadata([ticker])
-    except Exception:
-        metadata = {}
+    if metadata is None:
+        from ..market_features import get_ticker_metadata
+
+        try:
+            metadata = get_ticker_metadata([ticker])
+        except Exception:
+            metadata = {}
 
     features, _ = create_global_features_and_target(ticker, frame, metadata, target_days=1)
     if features.empty:
@@ -137,12 +139,22 @@ def build_signal_table(
             f"글로벌 모델({_MODEL_HORIZON.get(horizon, 'mid')})이 없습니다. 먼저 학습하세요."
         )
 
+    # 메타데이터는 티커마다 네트워크를 타므로 한 번에 받는다. 종목별로 부르면
+    # 125종목 백테스트가 125번 왕복한다.
+    from ..market_features import get_ticker_metadata
+
+    try:
+        metadata = get_ticker_metadata(list(frames))
+    except Exception as exc:
+        print(f"메타데이터 일괄 조회 실패, 종목별 폴백합니다: {exc}")
+        metadata = None
+
     table = SignalTable()
     for ticker, raw in frames.items():
         if raw is None or raw.empty or "Close" not in raw.columns:
             continue
         frame = _as_utc_index(raw)
-        prob = _probability_series(ticker, frame, bundle)
+        prob = _probability_series(ticker, frame, bundle, metadata)
         if prob.empty:
             continue
         table.probabilities[ticker] = prob
