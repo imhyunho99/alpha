@@ -14,6 +14,7 @@ from .prices import HistoricalPrices, LivePrices
 from .temperature import profile_for
 
 LIVE_INTERVAL_SEC = 300
+LIVE_UNIVERSE_CAP = 150
 
 _live_thread: threading.Thread | None = None
 _live_running = False
@@ -118,6 +119,9 @@ def _live_loop(username: str) -> None:
                 continue
 
             profile = profile_for(int(cfg["temperature"]))
+            # 티어를 가로질러 상한만큼만 본다. 온도 10의 전체 유니버스(약 900종목)를
+            # 5분마다 전부 채점하면 한 사이클이 주기 안에 끝나지 않는다.
+            tickers = universe.sample_across_tiers(profile.universe_tiers, LIVE_UNIVERSE_CAP)
             account, last_rebalance = store.load_account(username)
             if account is None:
                 account = PaperAccount(cash=float(cfg["capital"]))
@@ -126,7 +130,7 @@ def _live_loop(username: str) -> None:
             prices = LivePrices()
             outcome = step(
                 account=account, profile=profile,
-                tickers=universe.tickers_for(profile.universe_tiers),
+                tickers=tickers,
                 prices=prices, clock=LiveClock(), journal=Journal(actor=username),
                 prob_fn=predict_proba_with_global_model, score_fn=score_fn,
                 horizon=cfg.get("horizon", "medium"), last_rebalance=last_rebalance,

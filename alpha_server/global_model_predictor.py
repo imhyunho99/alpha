@@ -10,13 +10,30 @@ from .global_model_handler import create_global_features_and_target
 MODELS_DIR = os.path.expanduser("~/AlphaModels")
 
 
+_MODEL_CACHE: dict = {}
+
+
+def clear_model_cache():
+    """재학습 직후처럼 강제로 다시 읽어야 할 때 쓴다."""
+    _MODEL_CACHE.clear()
+
+
 def _load_model_and_features(horizon_name):
     """모델 번들을 로드한다. 없으면 None."""
     model_path = os.path.join(MODELS_DIR, f"global_{horizon_name}_model.joblib")
     if not os.path.exists(model_path):
         return None
+    # 11MB 모델을 호출마다 읽으면 루프가 디스크에 묶인다. mtime을 키로 캐시하되
+    # 재학습으로 파일이 바뀌면 자동으로 다시 읽는다.
+    mtime = os.path.getmtime(model_path)
+    cached = _MODEL_CACHE.get(horizon_name)
+    if cached and cached[0] == mtime:
+        return cached[1]
+
     saved = joblib.load(model_path)
-    return saved['model'], saved['features'], saved['encoder'], saved['cat_cols']
+    bundle = (saved['model'], saved['features'], saved['encoder'], saved['cat_cols'])
+    _MODEL_CACHE[horizon_name] = (mtime, bundle)
+    return bundle
 
 
 def _latest_feature_row(ticker, feature_columns, encoder, cat_cols):

@@ -236,3 +236,57 @@ def test_load_from_csv_returns_none_for_missing_file(tmp_path, monkeypatch):
 
     monkeypatch.setattr(data_handler, "CSV_DIR", str(tmp_path))
     assert data_handler.load_from_csv("NOPE") is None
+
+
+# --- 모델 번들 캐시 ---
+
+def test_model_bundle_is_cached_by_mtime(tmp_path, monkeypatch):
+    """11MB 모델을 호출마다 읽으면 실시간 루프가 디스크에 묶인다."""
+    import joblib
+
+    from alpha_server import global_model_predictor as gmp
+
+    monkeypatch.setattr(gmp, "MODELS_DIR", str(tmp_path))
+    path = tmp_path / "global_short_model.joblib"
+    joblib.dump({"model": "M1", "features": ["f"], "encoder": None, "cat_cols": []}, path)
+
+    loads = []
+    real_load = joblib.load
+
+    def counting_load(p, *a, **k):
+        loads.append(p)
+        return real_load(p, *a, **k)
+
+    monkeypatch.setattr(gmp.joblib, "load", counting_load)
+    gmp.clear_model_cache()
+
+    first = gmp._load_model_and_features("short")
+    second = gmp._load_model_and_features("short")
+    assert first[0] == "M1"
+    assert second is first          # 같은 번들 객체를 그대로 돌려준다
+    assert len(loads) == 1          # 디스크는 한 번만 읽는다
+
+
+def test_model_cache_reloads_after_retraining(tmp_path, monkeypatch):
+    import os
+
+    import joblib
+
+    from alpha_server import global_model_predictor as gmp
+
+    monkeypatch.setattr(gmp, "MODELS_DIR", str(tmp_path))
+    path = tmp_path / "global_short_model.joblib"
+    joblib.dump({"model": "OLD", "features": ["f"], "encoder": None, "cat_cols": []}, path)
+    gmp.clear_model_cache()
+    assert gmp._load_model_and_features("short")[0] == "OLD"
+
+    # 재학습으로 파일이 바뀌면 캐시를 버리고 다시 읽어야 한다
+    joblib.dump({"model": "NEW", "features": ["f"], "encoder": None, "cat_cols": []}, path)
+    os.utime(path, (0, 0))
+    assert gmp._load_model_and_features("short")[0] == "NEW"
+
+
+def test_live_universe_is_capped():
+    from alpha_server.autopilot import runner
+
+    assert runner.LIVE_UNIVERSE_CAP <= 200
