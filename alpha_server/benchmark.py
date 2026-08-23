@@ -418,3 +418,34 @@ CURRENT_FEATURE_COLUMNS = [
     "Return_5d", "BB_Width", "Volume_Ratio", "High_Low_Ratio", "DayOfWeek",
     "Month", "Log_MarketCap", "Beta", "Sector_code", "Industry_code",
 ]
+
+
+# --------------------------------------------------------------------------
+# 정규화
+# --------------------------------------------------------------------------
+
+# 가격 단위를 그대로 갖는 피처들. 종가로 나누지 않으면 모델이 패턴이 아니라
+# 종목을 식별한다 — SMA_20=500(애플)과 SMA_20=0.001(잡코인)은 지문이다.
+PRICE_SCALED_COLUMNS = ("SMA_20", "SMA_50", "EMA_12", "MACD", "Volatility")
+
+# 종목마다 고정된 값. 횡단면 타이밍에 기여하지 못하면서 식별 단서만 준다.
+IDENTITY_COLUMNS = ("Log_MarketCap", "Beta", "Sector_code", "Industry_code")
+
+NORMALIZED_FEATURE_COLUMNS = [
+    c for c in CURRENT_FEATURE_COLUMNS if c not in IDENTITY_COLUMNS
+]
+
+
+def normalize_price_features(feats: pd.DataFrame, close: pd.Series) -> pd.DataFrame:
+    """가격 단위 피처를 종가로 나눠 무차원으로 만든다.
+
+    2026-08-23 측정: 정규화하고 식별 컬럼을 빼자 IC 가 0.102 → 0.049,
+    10분위 스프레드가 2.40% → 0.67% 로 떨어졌다. 사라진 절반은 실력이 아니라
+    "학습 구간에서 오른 종목군을 외운 것"이었다.
+    """
+    out = feats.copy()
+    denom = close.reindex(out.index).replace(0, np.nan)
+    for col in PRICE_SCALED_COLUMNS:
+        if col in out.columns:
+            out[col] = out[col] / denom
+    return out

@@ -221,3 +221,48 @@ def test_momentum_candidate_returns_none_without_its_column():
         "fwd_return": [0.1, -0.1, 0.05],
     })
     assert bm.candidate_momentum(None, test, []) is None
+
+
+# ---------- 정규화 ----------
+
+def test_normalize_makes_price_features_scale_free():
+    """같은 모양의 시계열이면 가격대가 달라도 피처 값이 같아야 한다."""
+    cheap = _ohlcv(200)
+    expensive = cheap * 1000.0
+
+    fn = bm.current_feature_fn({}, "X")
+    a = bm.normalize_price_features(fn(cheap), cheap["Close"])
+    b = bm.normalize_price_features(fn(expensive), expensive["Close"])
+
+    common = a.index.intersection(b.index)
+    for col in bm.PRICE_SCALED_COLUMNS:
+        np.testing.assert_allclose(
+            a.loc[common, col], b.loc[common, col], rtol=1e-9,
+            err_msg=f"{col} 이 가격대에 따라 달라집니다 — 종목 식별 단서가 됩니다",
+        )
+
+
+def test_raw_price_features_do_differ_by_scale():
+    """정규화 전에는 실제로 달라야 한다 — 그게 문제였다는 증거."""
+    cheap = _ohlcv(200)
+    expensive = cheap * 1000.0
+    fn = bm.current_feature_fn({}, "X")
+    a, b = fn(cheap), fn(expensive)
+    common = a.index.intersection(b.index)
+    assert not np.allclose(a.loc[common, "SMA_20"], b.loc[common, "SMA_20"])
+
+
+def test_normalized_column_list_drops_identity_features():
+    for col in bm.IDENTITY_COLUMNS:
+        assert col not in bm.NORMALIZED_FEATURE_COLUMNS
+    assert len(bm.NORMALIZED_FEATURE_COLUMNS) == 13
+
+
+def test_normalize_survives_a_zero_close():
+    frame = _ohlcv(200)
+    fn = bm.current_feature_fn({}, "X")
+    feats = fn(frame)
+    close = frame["Close"].copy()
+    close.iloc[-5:] = 0.0
+    out = bm.normalize_price_features(feats, close)
+    assert np.isfinite(out[list(bm.PRICE_SCALED_COLUMNS)].to_numpy()).sum() > 0
