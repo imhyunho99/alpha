@@ -18,6 +18,29 @@ def clear_model_cache():
     _MODEL_CACHE.clear()
 
 
+# 학습 코드가 'Date' 를 drop 한 뒤 학습하면서 features 목록에는 그대로 남겨두었다.
+# 그 결과 저장된 목록(18개)이 모델이 기대하는 입력(17개)과 어긋나, 예측이
+# KeyError 로 죽고 scoring_engine 이 그 예외를 삼켜 AI 점수를 0으로 대체해왔다.
+# 재학습 없이 쓰기 위해 로드 시점에 목록을 모델 기준으로 맞춘다.
+_NON_FEATURE_COLUMNS = ("Date", "Ticker", "future_price", "target")
+
+
+def _reconcile_features(model, features):
+    expected = getattr(model, "n_features_in_", None)
+    if expected is None or len(features) == expected:
+        return features
+
+    trimmed = [f for f in features if f not in _NON_FEATURE_COLUMNS]
+    if len(trimmed) == expected:
+        return trimmed
+
+    print(
+        f"경고: 저장된 feature 목록({len(features)}개)이 모델 입력({expected}개)과 "
+        f"맞지 않습니다. 재학습이 필요합니다."
+    )
+    return features
+
+
 def _load_model_and_features(horizon_name):
     """모델 번들을 로드한다. 없으면 None."""
     model_path = os.path.join(MODELS_DIR, f"global_{horizon_name}_model.joblib")
@@ -31,7 +54,9 @@ def _load_model_and_features(horizon_name):
         return cached[1]
 
     saved = joblib.load(model_path)
-    bundle = (saved['model'], saved['features'], saved['encoder'], saved['cat_cols'])
+    model = saved['model']
+    features = _reconcile_features(model, list(saved['features']))
+    bundle = (model, features, saved['encoder'], saved['cat_cols'])
     _MODEL_CACHE[horizon_name] = (mtime, bundle)
     return bundle
 

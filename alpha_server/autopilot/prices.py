@@ -9,6 +9,24 @@ import pandas as pd
 from . import fx
 
 
+def _to_utc_index(frame: pd.DataFrame) -> pd.DataFrame:
+    """인덱스를 UTC tz-aware DatetimeIndex 로 통일한다."""
+    if frame is None or frame.empty:
+        return frame
+    out = frame
+    if not isinstance(out.index, pd.DatetimeIndex):
+        out = out.copy()
+        out.index = pd.to_datetime(out.index, errors="coerce")
+        out = out[out.index.notna()]
+    if out.index.tz is None:
+        out = out.copy()
+        out.index = out.index.tz_localize("UTC")
+    elif str(out.index.tz) != "UTC":
+        out = out.copy()
+        out.index = out.index.tz_convert("UTC")
+    return out
+
+
 class PriceSource(Protocol):
     def get(self, ticker: str, at: datetime) -> float | None: ...
     def get_many(self, tickers: list[str], at: datetime) -> dict[str, float]: ...
@@ -32,7 +50,9 @@ class HistoricalPrices(_BaseSource):
     """
 
     def __init__(self, frames: dict[str, pd.DataFrame], rates) -> None:
-        self._frames = frames
+        # CSV에서 온 프레임은 tz-naive 인덱스를 갖는다. 엔진의 `at` 은 항상
+        # tz-aware 이므로 그대로 비교하면 TypeError 로 죽는다. 생성 시 한 번만 맞춘다.
+        self._frames = {t: _to_utc_index(f) for t, f in frames.items() if f is not None}
         self._rates = rates
 
     def get(self, ticker: str, at: datetime) -> float | None:

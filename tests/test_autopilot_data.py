@@ -290,3 +290,58 @@ def test_live_universe_is_capped():
     from alpha_server.autopilot import runner
 
     assert runner.LIVE_UNIVERSE_CAP <= 200
+
+
+def test_historical_prices_accepts_tz_naive_frames():
+    """CSV에서 온 프레임은 tz-naive다. 그대로 두면 엔진의 tz-aware at과 비교가 깨진다."""
+    from datetime import datetime, timezone
+
+    import pandas as pd
+
+    from alpha_server.autopilot.prices import HistoricalPrices
+
+    naive = pd.DataFrame(
+        {"Close": [100.0, 110.0]},
+        index=pd.DatetimeIndex(["2026-01-01", "2026-01-02"]),  # tz 없음
+    )
+    src = HistoricalPrices({"AAPL": naive}, rates=1000.0)
+    assert src.get("AAPL", datetime(2026, 1, 2, tzinfo=timezone.utc)) == 110.0 * 1000.0
+
+
+def test_historical_prices_skips_none_frames():
+    from datetime import datetime, timezone
+
+    import pandas as pd
+
+    from alpha_server.autopilot.prices import HistoricalPrices
+
+    src = HistoricalPrices(
+        {"GOOD": pd.DataFrame({"Close": [1.0]}, index=pd.DatetimeIndex(["2026-01-01"])),
+         "BAD": None},
+        rates=1.0,
+    )
+    assert src.get("BAD", datetime(2026, 1, 1, tzinfo=timezone.utc)) is None
+    assert src.get("GOOD", datetime(2026, 1, 1, tzinfo=timezone.utc)) == 1.0
+
+
+def test_reconcile_features_drops_non_feature_columns():
+    """저장된 목록에 'Date'가 남아 예측이 KeyError로 죽던 문제."""
+    from alpha_server import global_model_predictor as gmp
+
+    class _M:
+        n_features_in_ = 2
+
+    assert gmp._reconcile_features(_M(), ["Date", "A", "B"]) == ["A", "B"]
+    # 이미 맞으면 그대로 둔다
+    assert gmp._reconcile_features(_M(), ["A", "B"]) == ["A", "B"]
+
+
+def test_reconcile_features_keeps_list_when_it_cannot_be_fixed(capsys):
+    from alpha_server import global_model_predictor as gmp
+
+    class _M:
+        n_features_in_ = 99
+
+    out = gmp._reconcile_features(_M(), ["A", "B"])
+    assert out == ["A", "B"]
+    assert "재학습" in capsys.readouterr().out
