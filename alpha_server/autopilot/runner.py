@@ -130,6 +130,40 @@ CATCH_UP_MIN_GAP_HOURS = 20
 CATCH_UP_MAX_DAYS = 45
 
 
+def _fetch_hourly(tickers: list[str], gap) -> dict:
+    """공백 구간의 시간봉. yfinance 는 1h 를 60일치까지 준다 (하루 약 5봉).
+
+    실패하면 빈 dict — 호출부가 일봉으로 폴백한다.
+    """
+    import pandas as pd
+    import yfinance as yf
+
+    days = min(max(gap.days + 2, 2), 59)
+    out: dict = {}
+    CHUNK = 50
+    for start in range(0, len(tickers), CHUNK):
+        chunk = tickers[start:start + CHUNK]
+        try:
+            raw = yf.download(
+                tickers=chunk, period=f"{days}d", interval="1h",
+                group_by="ticker", auto_adjust=True, progress=False, threads=True,
+            )
+        except Exception as exc:
+            print(f"시간봉 조회 실패({len(chunk)}종목): {exc}")
+            continue
+        if raw is None or raw.empty:
+            continue
+        for t in chunk:
+            try:
+                frame = raw[t] if isinstance(raw.columns, pd.MultiIndex) else raw
+                frame = frame.dropna(how="all")
+                if not frame.empty and "Close" in frame.columns:
+                    out[t] = frame
+            except Exception:
+                continue
+    return out
+
+
 def catch_up(username: str, portfolio: str = "default") -> int:
     """맥이 꺼져 있던 구간을 일봉으로 재생한다. 재생한 스텝 수를 돌려준다.
 
@@ -161,6 +195,8 @@ def catch_up(username: str, portfolio: str = "default") -> int:
     profile = profile_for(int(cfg["temperature"]))
     tickers = universe.sample_across_tiers(profile.universe_tiers, LIVE_UNIVERSE_CAP)
 
+    # 신호는 일봉 CSV 로 만들고, 재생 걸음은 시간봉으로 걷는다. 온도 10은
+    # 4시간마다 리밸런싱하므로 일 단위로는 재현이 안 된다.
     frames = {}
     for t in tickers:
         df = load_from_csv(t)
@@ -183,14 +219,27 @@ def catch_up(username: str, portfolio: str = "default") -> int:
         return 0
 
     usable = {t: f for t, f in frames.items() if t in table.probabilities}
-    prices = HistoricalPrices(usable, rates=fx.usd_krw_series(last_tracked, now))
-    clock = BacktestClock(last_tracked, now, step_days=1)
+
+    # 가격은 시간봉으로 받아 손절/익절 판정을 촘촘하게 한다. 실패하면 일봉으로
+    # 폴백한다 — 거친 재생이라도 아예 건너뛰는 것보다 낫다.
+    step_hours = max(1.0, min(float(profile.rebalance_hours), 24.0))
+    hourly = _fetch_hourly(list(usable), gap)
+    if hourly:
+        price_frames = hourly
+        resolution = "시간봉"
+    else:
+        price_frames = usable
+        step_hours = 24.0
+        resolution = "일봉 폴백"
+
+    prices = HistoricalPrices(price_frames, rates=fx.usd_krw_series(last_tracked, now))
+    clock = BacktestClock(last_tracked, now, step_hours=step_hours)
     journal = Journal(actor=f"{username}/{portfolio}")
 
     steps = 0
     fills = 0
     while True:
-        account.accrue_interest(days=1)
+        account.accrue_interest(days=step_hours / 24.0)
         outcome = step(
             account=account, profile=profile, tickers=list(usable), prices=prices,
             clock=clock, journal=journal,
@@ -206,7 +255,8 @@ def catch_up(username: str, portfolio: str = "default") -> int:
 
     store.save_account(username, account, last_rebalance, portfolio, last_tracked_at=now)
     print(f"{tag} 공백 재생: {gap.days}일 {gap.seconds // 3600}시간 → "
-          f"{steps}스텝, 체결 {fills}건 (일봉 해상도)", flush=True)
+          f"{steps}스텝({step_hours:.0f}시간 간격), 체결 {fills}건, {resolution}",
+          flush=True)
     return steps
 
 

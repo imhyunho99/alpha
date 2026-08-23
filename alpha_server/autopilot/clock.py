@@ -21,14 +21,26 @@ class LiveClock:
 
 
 class BacktestClock:
-    def __init__(self, start: datetime, end: datetime, step_days: int = 1) -> None:
+    def __init__(self, start: datetime, end: datetime, step_days: int = 1,
+                 step_hours: float | None = None) -> None:
+        """step_hours 를 주면 그쪽이 우선한다.
+
+        공백 재생을 시간봉으로 하려면 하루보다 잘게 걸을 수 있어야 한다.
+        온도 10은 4시간마다 리밸런싱하므로 일 단위 걸음으로는 재현이 안 된다.
+        """
         if start > end:
             raise ValueError("start가 end보다 뒤입니다")
-        if step_days < 1:
-            raise ValueError("step_days는 1 이상이어야 합니다")
+        if step_hours is not None:
+            if step_hours <= 0:
+                raise ValueError("step_hours는 0보다 커야 합니다")
+            step = timedelta(hours=step_hours)
+        else:
+            if step_days < 1:
+                raise ValueError("step_days는 1 이상이어야 합니다")
+            step = timedelta(days=step_days)
         self._current = start
         self._end = end
-        self._step = timedelta(days=step_days)
+        self._step = step
 
     def now(self) -> datetime:
         return self._current

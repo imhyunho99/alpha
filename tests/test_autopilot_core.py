@@ -22,7 +22,7 @@ def test_anchor_temperatures_match_spec():
     p5 = profile_for(5)
     assert p5.cash_floor_pct == 40
     assert p5.max_holdings == 10
-    assert p5.rebalance_days == 3
+    assert p5.rebalance_hours == 72.0
 
     p10 = profile_for(10)
     assert p10.cash_floor_pct == 5
@@ -241,3 +241,21 @@ def test_etf_tier_includes_bonds():
 
     assert {"TLT", "IEF", "AGG"} <= set(ETF_TICKERS)
     assert len(ETF_TICKERS) >= 15
+
+
+def test_rebalancing_gets_faster_as_temperature_rises():
+    """다이얼의 방향성 불변식 — 온도가 오르면 더 자주 손댄다."""
+    values = [profile_for(t).rebalance_hours for t in range(1, 11)]
+    assert values == sorted(values, reverse=True)
+
+
+def test_high_temperature_rebalances_more_than_once_a_day():
+    """온도 10이 하루 한 번이면 '공격적'이라 할 수 없다.
+
+    진입 신호는 하루 단위로만 바뀌지만 손절/익절은 그렇지 않다. 고온도가
+    공격적이라는 건 더 자주 반응한다는 뜻이어야 한다.
+    """
+    assert profile_for(10).rebalance_hours < 24.0
+    assert profile_for(9).rebalance_hours < 24.0
+    # 저온도는 반대로 며칠에 한 번이어야 한다
+    assert profile_for(1).rebalance_hours >= 24 * 5

@@ -136,3 +136,95 @@ def test_live_interval_is_proportionate_to_the_model_horizon():
         "주기가 너무 짧으면 맥을 계속 켜두라는 요구가 된다"
     )
     assert runner.LIVE_INTERVAL_SEC <= 86400
+
+
+# --- 재생 해상도 ---
+
+def test_backtest_clock_can_walk_in_hours():
+    from alpha_server.autopilot.clock import BacktestClock
+
+    start = datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+    c = BacktestClock(start, end, step_hours=4.0)
+
+    seen = [c.now()]
+    while c.advance():
+        seen.append(c.now())
+    assert len(seen) == 4                       # 0, 4, 8, 12시
+    assert seen[-1] == end
+
+
+def test_backtest_clock_rejects_a_nonpositive_hour_step():
+    from alpha_server.autopilot.clock import BacktestClock
+
+    with pytest.raises(ValueError):
+        BacktestClock(
+            datetime(2026, 8, 1, tzinfo=timezone.utc),
+            datetime(2026, 8, 2, tzinfo=timezone.utc),
+            step_hours=0,
+        )
+
+
+def test_hour_step_wins_over_day_step():
+    from alpha_server.autopilot.clock import BacktestClock
+
+    start = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    c = BacktestClock(start, start + timedelta(hours=6), step_days=1, step_hours=2.0)
+    n = 1
+    while c.advance():
+        n += 1
+    assert n == 4
+
+
+def test_replay_falls_back_to_daily_when_hourly_is_unavailable(isolated, monkeypatch, capsys):
+    """시간봉을 못 받아도 거친 재생이 아예 건너뛰는 것보다 낫다."""
+    frames = {"AAA": _frames()}
+    monkeypatch.setattr(runner.universe, "sample_across_tiers", lambda tiers, cap: list(frames))
+    monkeypatch.setattr("alpha_server.data_handler.load_from_csv", lambda t: frames.get(t))
+    monkeypatch.setattr(runner, "_fetch_hourly", lambda tickers, gap: {})
+
+    class _Table:
+        probabilities = {"AAA": None}
+
+        def prob_fn_for(self, clock):
+            return lambda t, h: 0.9
+
+        def score_fn_for(self, clock):
+            return lambda t, h: 80.0
+
+    monkeypatch.setattr("alpha_server.autopilot.signals.build_signal_table",
+                        lambda frames, horizon="medium": _Table())
+    monkeypatch.setattr("alpha_server.autopilot.fx.usd_krw_series",
+                        lambda a, b: pd.Series(dtype="float64"))
+
+    assert runner.catch_up("kim", "p") > 0
+    assert "일봉 폴백" in capsys.readouterr().out
+
+
+def test_replay_uses_hourly_when_available(isolated, monkeypatch, capsys):
+    daily = {"AAA": _frames()}
+    hourly = {"AAA": _frames(n=600, seed=3)}
+
+    monkeypatch.setattr(runner.universe, "sample_across_tiers", lambda tiers, cap: list(daily))
+    monkeypatch.setattr("alpha_server.data_handler.load_from_csv", lambda t: daily.get(t))
+    monkeypatch.setattr(runner, "_fetch_hourly", lambda tickers, gap: hourly)
+
+    class _Table:
+        probabilities = {"AAA": None}
+
+        def prob_fn_for(self, clock):
+            return lambda t, h: 0.9
+
+        def score_fn_for(self, clock):
+            return lambda t, h: 80.0
+
+    monkeypatch.setattr("alpha_server.autopilot.signals.build_signal_table",
+                        lambda frames, horizon="medium": _Table())
+    monkeypatch.setattr("alpha_server.autopilot.fx.usd_krw_series",
+                        lambda a, b: pd.Series(dtype="float64"))
+
+    steps = runner.catch_up("kim", "p")
+    out = capsys.readouterr().out
+    assert "시간봉" in out
+    # 온도 5는 72시간 주기지만 걸음은 24시간 상한이라 3일 공백에 3~5스텝
+    assert steps >= 3
