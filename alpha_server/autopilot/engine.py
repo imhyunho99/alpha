@@ -50,6 +50,23 @@ def step(
     snapshot = prices.get_many(sorted(set(tickers) | set(held)), at)
     fills: list[Fill] = []
 
+    # 0) 보유 종목의 가격이 하나라도 없으면 아무것도 하지 않는다.
+    #
+    # market_value() 는 가격을 받은 종목만 합산한다. 일시적 네트워크 실패로 일부
+    # 가격이 빠지면 equity 가 실제보다 훨씬 작게 잡히고, margin_ratio 가 무너져
+    # **멀쩡한 레버리지 계좌가 청산된다**. 실측 예: 15종목 중 일부만 받았을 때
+    # equity 가 9,999,996 -> 1,638,497 로 찍혔다.
+    #
+    # 가격을 모르면 판단하지 않는 것이 옳다. 다음 사이클에 다시 본다.
+    missing = [t for t in held if t not in snapshot]
+    if missing:
+        journal.record("stale_prices", at=at, missing=len(missing),
+                       tickers=missing[:5])
+        return StepResult(
+            at, account.equity(snapshot), fills,
+            skipped=f"가격 누락 {len(missing)}/{len(held)}종목",
+        )
+
     # 1) 청산 — 다른 무엇보다 먼저
     if account.is_liquidatable(snapshot):
         liquidation_fills = account.liquidate_all(snapshot)

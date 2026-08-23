@@ -260,6 +260,27 @@ def catch_up(username: str, portfolio: str = "default") -> int:
     return steps
 
 
+def _fd_note() -> str:
+    """로그 꼬리에 붙일 " · fd 123/4096". 측정 못 하면 빈 문자열.
+
+    한 달 무인 운용에서 fd 는 서서히 샌다. 매 사이클 찍어두면 고갈 전에
+    기울기가 보이고, 고갈된 뒤에도 마지막 로그가 원인을 남긴다.
+    """
+    try:
+        from ..yf_session import fd_pressure  # 아직 없을 수 있는 모듈
+    except ImportError:
+        return ""
+    try:
+        raw = fd_pressure()
+        if isinstance(raw, dict):
+            opened, limit = int(raw["open"]), int(raw["limit"])
+        else:
+            opened, limit = int(raw[0]), int(raw[1])
+    except Exception:
+        return ""
+    return f" · fd {opened}/{limit}"
+
+
 def _live_once(username: str, portfolio: str = "default") -> None:
     """해당 포트폴리오 계좌 하나를 한 스텝 굴린다. 다른 계좌는 건드리지 않는다."""
     cfg = store.load_config(username, portfolio)
@@ -306,7 +327,8 @@ def _live_once(username: str, portfolio: str = "default") -> None:
     print(
         f"[autopilot {username}/{portfolio}] 온도 {profile.temperature} "
         f"유니버스 {len(tickers)} · {detail} · "
-        f"보유 {len(account.positions)}종목 · 평가 {outcome.equity:,.0f}원",
+        f"보유 {len(account.positions)}종목 · 평가 {outcome.equity:,.0f}원"
+        f"{_fd_note()}",
         flush=True,
     )
 

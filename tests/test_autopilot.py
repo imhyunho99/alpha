@@ -404,3 +404,40 @@ def test_state_reports_none_when_never_tracked(api_client):
     body = api_client.get("/autopilot/state", headers=h).json()
     assert body["last_tracked_at"] is None
     assert body["hours_since_tracked"] is None
+
+
+# --- 가격 누락 방어 ---
+
+def test_step_refuses_to_act_when_a_held_price_is_missing():
+    """네트워크 실패로 일부 가격이 빠지면 equity 가 실제보다 작게 잡히고
+    멀쩡한 레버리지 계좌가 청산된다. 실측: equity 9,999,996 → 1,638,497."""
+    acct = PaperAccount(cash=0.0, borrowed=1_400_000.0)
+    acct.positions["A"] = Position("A", quantity=100, avg_price=50_000.0)
+    acct.positions["B"] = Position("B", quantity=100, avg_price=64_000.0)
+
+    # B 가격만 온다 → 그대로 두면 margin 이 무너져 청산된다
+    result = _step(acct, 8, ["A", "B"], {"B": 64_000.0})
+
+    assert result.liquidated is False
+    assert result.fills == []
+    assert "가격 누락" in (result.skipped or "")
+    assert set(acct.positions) == {"A", "B"}, "포지션이 청산되면 안 됩니다"
+
+
+def test_step_proceeds_when_every_held_price_is_present():
+    acct = PaperAccount(cash=0.0, borrowed=1_400_000.0)
+    acct.positions["A"] = Position("A", quantity=100, avg_price=50_000.0)
+    acct.positions["B"] = Position("B", quantity=100, avg_price=64_000.0)
+
+    result = _step(acct, 8, ["A", "B"], {"A": 50_000.0, "B": 64_000.0},
+                   last_rebalance=_AT, prob=0.0, score=0.0)
+    assert "가격 누락" not in (result.skipped or "")
+    assert result.liquidated is False
+
+
+def test_step_with_no_positions_is_unaffected_by_the_guard():
+    """보유가 없으면 누락도 없다 — 신규 진입은 계속 가능해야 한다."""
+    acct = PaperAccount(cash=10_000_000.0)
+    result = _step(acct, 5, ["A", "B"], {"A": 1000.0})
+    assert "가격 누락" not in (result.skipped or "")
+    assert "A" in acct.positions
