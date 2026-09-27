@@ -181,6 +181,55 @@ def test_usd_krw_rate_is_cached(monkeypatch):
     assert len(calls) == 1
 
 
+def test_latest_usd_krw_rate_expires(monkeypatch):
+    # 상주 서버는 몇 주씩 뜬다. "latest" 를 영구 캐시하면 기동 시점 환율로
+    # 계속 환산한다 — 실측: 9/18 기동 후 1385원 고정, 9/27 실제 1354원.
+    rates = iter([1385.0, 1354.0])
+    monkeypatch.setattr(fx, "_fetch_usd_krw", lambda at: next(rates))
+    clock = [1000.0]
+    monkeypatch.setattr(fx, "_now", lambda: clock[0])
+    fx.clear_cache()
+
+    assert fx.usd_krw_rate(None) == 1385.0
+    clock[0] += fx.LATEST_TTL_SEC - 1
+    assert fx.usd_krw_rate(None) == 1385.0
+    clock[0] += 2
+    assert fx.usd_krw_rate(None) == 1354.0
+
+
+def test_latest_fallback_is_not_cached(monkeypatch):
+    # 첫 조회가 네트워크 실패면 폴백값이 영구히 박히면 안 된다.
+    calls = []
+
+    def flaky(at):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("network down")
+        return 1360.0
+
+    monkeypatch.setattr(fx, "_fetch_usd_krw", flaky)
+    fx.clear_cache()
+
+    assert fx.usd_krw_rate(None) == fx.FALLBACK_USD_KRW
+    assert fx.usd_krw_rate(None) == 1360.0
+
+
+def test_latest_prefers_last_known_rate_over_fallback(monkeypatch):
+    rates = iter([1360.0])
+
+    def once(at):
+        return next(rates)   # 두 번째부터 StopIteration
+
+    monkeypatch.setattr(fx, "_fetch_usd_krw", once)
+    clock = [0.0]
+    monkeypatch.setattr(fx, "_now", lambda: clock[0])
+    fx.clear_cache()
+
+    assert fx.usd_krw_rate(None) == 1360.0
+    clock[0] += fx.LATEST_TTL_SEC + 1
+    assert fx.usd_krw_rate(None) == 1360.0
+
+
 def test_resolve_rate_accepts_a_plain_float():
     at = datetime(2026, 1, 1, tzinfo=timezone.utc)
     assert fx.resolve_rate(1300.0, at) == 1300.0
