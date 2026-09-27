@@ -205,17 +205,18 @@ def autopilot_set_config(
     capital: float,
     active: bool,
     portfolio: str = DEFAULT_PORTFOLIO,
+    mode: Optional[str] = None,
 ):
-    return _handle_request(
-        "put",
-        "/autopilot/config",
-        json={
-            "temperature": temperature,
-            "capital": capital,
-            "active": active,
-            "portfolio": portfolio or DEFAULT_PORTFOLIO,
-        },
-    )
+    body = {
+        "temperature": temperature,
+        "capital": capital,
+        "active": active,
+        "portfolio": portfolio or DEFAULT_PORTFOLIO,
+    }
+    # mode 를 모르는 예전 서버도 있으니 지정했을 때만 보낸다.
+    if mode is not None:
+        body["mode"] = mode
+    return _handle_request("put", "/autopilot/config", json=body)
 
 
 def autopilot_state(portfolio: str = DEFAULT_PORTFOLIO):
@@ -239,3 +240,26 @@ def autopilot_briefing(period: str = "daily", portfolio: str = DEFAULT_PORTFOLIO
 
 def autopilot_alerts(portfolio: str = DEFAULT_PORTFOLIO):
     return _handle_request("get", "/autopilot/alerts" + _portfolio_query(portfolio))
+
+
+# --- 뉴스 데스크 (뉴스 기반 모의 자동매매) ---
+# 포트폴리오 생성·시작·정지는 autopilot_set_config(..., mode="news") 로 한다.
+
+
+def newsdesk_style_preview(text: str):
+    """자연어 스타일을 해석만 해 본다. 저장하지 않는다."""
+    return _handle_request("post", "/newsdesk/style/preview", json={"text": text})
+
+
+def newsdesk_set_style(portfolio: str, text: str):
+    return _handle_request(
+        "put", "/newsdesk/style", json={"portfolio": portfolio, "text": text}
+    )
+
+
+def newsdesk_get_style(portfolio: str):
+    return _handle_request("get", "/newsdesk/style" + _portfolio_query(portfolio))
+
+
+def newsdesk_state(portfolio: str):
+    return _handle_request("get", "/newsdesk/state" + _portfolio_query(portfolio))

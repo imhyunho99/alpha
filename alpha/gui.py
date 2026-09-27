@@ -10,6 +10,7 @@ from PySide6.QtGui import QFont, QAction
 
 from alpha import core
 from alpha.autopilot_widgets import AutopilotTab
+from alpha.news_widgets import NewsTab
 from alpha.strategy_widgets import ApiKeyDialog, LoginDialog, StrategyChatTab
 
 class WorkerThread(QThread):
@@ -44,7 +45,7 @@ class AlphaGUI(QMainWindow):
         self.progress_timer.timeout.connect(self.check_progress)
         self.progress_timer.setInterval(2000)  # 2초마다 체크
 
-        # 탭 구조: 분석 / 자동 운용 / 전략 채팅
+        # 탭 구조: 분석 / 자동 운용 / 뉴스 자동매매 / 전략 채팅
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
@@ -61,7 +62,11 @@ class AlphaGUI(QMainWindow):
         self.autopilot_tab = AutopilotTab()
         self.tabs.addTab(self.autopilot_tab, "🤖 자동 운용")
 
-        # 탭 3: 전략 채팅
+        # 탭 3: 뉴스 기반 모의 자동매매
+        self.news_tab = NewsTab()
+        self.tabs.addTab(self.news_tab, "📰 뉴스 자동매매")
+
+        # 탭 4: 전략 채팅
         self.strategy_tab = StrategyChatTab()
         self.tabs.addTab(self.strategy_tab, "💬 전략 채팅")
 
