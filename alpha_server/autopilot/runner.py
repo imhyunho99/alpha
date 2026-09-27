@@ -283,6 +283,12 @@ def _fd_note() -> str:
 
 def _live_once(username: str, portfolio: str = "default") -> None:
     """해당 포트폴리오 계좌 하나를 한 스텝 굴린다. 다른 계좌는 건드리지 않는다."""
+    # 뉴스 루프와 같은 잠금 — 모드 전환 순간 두 엔진이 같은 계좌를 덮어쓰지 않게.
+    with store.portfolio_lock(username, portfolio):
+        _live_once_locked(username, portfolio)
+
+
+def _live_once_locked(username: str, portfolio: str) -> None:
     cfg = store.load_config(username, portfolio)
     if not cfg.get("active") or cfg.get("mode") == "news":
         return

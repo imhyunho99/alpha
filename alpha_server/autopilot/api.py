@@ -29,7 +29,9 @@ class ConfigPayload(BaseModel):
     active: bool
     horizon: str = "medium"
     portfolio: str = Field(default="default", pattern=PORTFOLIO_PATTERN)
-    mode: str = Field(default="model", pattern=r"^(model|news)$")
+    # 생략하면 저장된 모드를 유지한다. 기본값을 "model" 로 두면 모드를 모르는
+    # 화면(자동 운용 탭)에서 시작/정지만 눌러도 뉴스 포트폴리오가 모델로 바뀐다.
+    mode: str | None = Field(default=None, pattern=r"^(model|news)$")
 
 
 class BacktestPayload(BaseModel):
@@ -113,6 +115,12 @@ def get_config(portfolio: str = "default", user: UserPublic = Depends(require_us
 def put_config(payload: ConfigPayload, user: UserPublic = Depends(require_user)):
     cfg = payload.model_dump()
     portfolio = cfg["portfolio"]
+    previous = store.load_config(user.username, portfolio)
+    if cfg["mode"] is None:
+        cfg["mode"] = previous.get("mode", "model")
+    if previous.get("mode", "model") != cfg["mode"]:
+        # 모드가 바뀌면 옛 엔진의 루프를 먼저 내린다. 안 그러면 두 루프가 한 계좌를 굴린다.
+        stop_live(user.username, portfolio)
     store.save_config(user.username, cfg, portfolio)
 
     if cfg["active"]:

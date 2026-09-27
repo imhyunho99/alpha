@@ -35,6 +35,11 @@ RULE_THRESHOLD_FACTOR = 0.5
 # 가격 모델 확률을 점수로 바꾸는 배율. 0.6 → +0.4점
 MODEL_SCALE = 4.0
 
+# 뉴스 점수로 한 매매(절반 매도·매수)는 종목당 이 시간에 한 번만. CLAUDE.md 의
+# "전략별 쿨다운" 게이트를 뉴스 모드에 적용한 것이다. 스타일 규칙 매도와 손절,
+# 손실 브레이크 축소는 사용자가 명시한 안전 동작이라 쿨다운을 받지 않는다.
+TICKER_COOLDOWN_HOURS = 6.0
+
 ModelFn = Callable[[str], "float | None"]   # ticker -> 상승 확률(0~1)
 
 _CATEGORY_KO = {
@@ -60,18 +65,36 @@ class NewsStepResult:
     drawdown_pct: float = 0.0
 
 
-def _decision(at, action, ticker, reason, amount=0.0, items=None) -> dict:
+def acted_key(item: Interpretation) -> str:
+    """같은 기사가 여러 종목에 걸릴 수 있다. '반응했다'는 종목 단위로 센다."""
+    return f"{item.ticker}:{item.item_id}"
+
+
+def _decision(at, action, ticker, reason, amount=0.0, items=None, consumed=None) -> dict:
+    """items 는 화면에 보여줄 대표 기사(최대 3), consumed 는 이번 판단이 소비한 기사 전부.
+
+    consumed 를 전부 저장해야 다음 바퀴에 나머지 기사를 '새 뉴스'로 착각하지 않는다.
+    실측(리뷰 재현): 대표 3건만 저장했더니 같은 사건 기사 10건으로 3분마다 절반씩
+    네 번 팔았다.
+    """
     items = items or []
+    consumed = consumed if consumed is not None else items
     return {
         "at": at.isoformat(),
         "action": action,
         "ticker": ticker,
         "amount": round(float(amount), 0),
         "reason": reason,
-        "item_ids": [i.item_id for i in items],
+        "item_ids": [acted_key(i) for i in consumed],
         "title": items[0].title if items else "",
         "url": items[0].url if items else "",
     }
+
+
+def _cooling(last_action_at: dict[str, datetime] | None, ticker: str, at: datetime) -> bool:
+    if not last_action_at or ticker not in last_action_at:
+        return False
+    return (at - last_action_at[ticker]).total_seconds() < TICKER_COOLDOWN_HOURS * 3600
 
 
 def _pnl_pct(account: PaperAccount, ticker: str, price: float) -> float:
@@ -94,6 +117,7 @@ def news_step(
     buys_today: int = 0,
     acted_item_ids: set[str] | None = None,
     model_fn: ModelFn | None = None,
+    last_action_at: dict[str, datetime] | None = None,
 ) -> NewsStepResult:
     acted = set(acted_item_ids or ())
     held_now = set(account.positions)
@@ -143,7 +167,7 @@ def news_step(
         if price is None:
             continue
         score, parts = scores.get(t, (0.0, []))
-        fresh = [p for p in parts if p.item.item_id not in acted]
+        fresh = [p for p in parts if acted_key(p.item) not in acted]
 
         rule_hits = [
             p for p in fresh
@@ -159,13 +183,13 @@ def news_step(
                 decisions.append(_decision(
                     at, "sell", t,
                     f"스타일 규칙: {category_ko(hit.category)} 악재 → 전량 정리",
-                    fill.gross, [hit],
+                    fill.gross, [hit], consumed=[p.item for p in parts],
                 ))
-                acted.add(hit.item_id)
+                acted.update(acted_key(p.item) for p in parts)
             continue
 
         negative = [p for p in fresh if p.value < 0]
-        if score <= -thr and negative:
+        if score <= -thr and negative and not _cooling(last_action_at, t, at):
             cat = dominant_category(parts, -1)
             qty = account.positions[t].quantity / 2
             fill = account.sell(t, qty, price)
@@ -176,15 +200,16 @@ def news_step(
                 decisions.append(_decision(
                     at, "trim", t,
                     f"악재 누적(점수 {score:+.2f}, 기준 -{thr:.2f}) → 절반 매도",
-                    fill.gross, [p.item for p in negative[:3]],
+                    fill.gross, [p.item for p in negative[:3]], consumed=[p.item for p in parts],
                 ))
-                acted.update(p.item.item_id for p in negative)
+                acted.update(acted_key(p.item) for p in parts)
 
     # 목표 금액 계산 — 전체 비중(손실 브레이크)과 종목 상한을 반영
     equity = account.equity(snapshot)
     slots = max(1, profile.max_holdings)
     deployable = equity * (100.0 - profile.cash_floor_pct) / 100.0 * profile.max_leverage * exposure
-    cap_pct = style.max_position_pct if style.max_position_pct else profile.max_position_pct
+    # 스타일 상한("20% 넘지 않게")은 한도다 — 온도 상한보다 느슨하게 만들지 않는다.
+    cap_pct = min(style.max_position_pct, profile.max_position_pct) if style.max_position_pct else profile.max_position_pct
     per_cap = equity * cap_pct / 100.0
     base_target = min(deployable / slots, per_cap)
 
@@ -220,7 +245,7 @@ def news_step(
             if t in style.avoid_tickers or snapshot.get(t) is None:
                 continue
             score, parts = scores.get(t, (0.0, []))
-            fresh_pos = [p for p in parts if p.value > 0 and p.item.item_id not in acted]
+            fresh_pos = [p for p in parts if p.value > 0 and acted_key(p.item) not in acted]
             fresh_pos.sort(key=lambda p: p.value, reverse=True)
             rule_buy = [
                 p for p in fresh_pos
@@ -241,7 +266,7 @@ def news_step(
                 if prob is not None:
                     model_part = weights.trust_for("model") * (float(prob) - 0.5) * MODEL_SCALE
             total = score + model_part
-            if not fresh_pos:
+            if not fresh_pos or _cooling(last_action_at, t, at):
                 continue   # 뉴스 없이 모델만으로는 사지 않는다 — 이 모드는 뉴스가 방아쇠다
             if total >= thr or rule_buy:
                 ranked.append((total, t, rule_buy or fresh_pos, model_part))
@@ -277,8 +302,10 @@ def news_step(
                 reason += f" · 가격 모델 {model_part:+.2f}"
             if exposure < 1.0:
                 reason += f" · 손실 브레이크로 비중 {exposure * 100:.0f}%"
-            decisions.append(_decision(at, "buy", t, reason, gap, [p.item for p in parts[:3]]))
-            acted.update(p.item.item_id for p in parts)
+            all_parts = scores.get(t, (0.0, []))[1]
+            decisions.append(_decision(at, "buy", t, reason, gap, [p.item for p in parts[:3]],
+                                       consumed=[p.item for p in all_parts]))
+            acted.update(acted_key(p.item) for p in all_parts)
 
     return NewsStepResult(
         at, account.equity(snapshot), fills, decisions,

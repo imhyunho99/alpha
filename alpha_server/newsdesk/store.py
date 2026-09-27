@@ -74,8 +74,9 @@ def load_news(since: datetime | None = None, tickers: set[str] | None = None) ->
     return out
 
 
-def seen_ids() -> set[str]:
-    return {i.item_id for i in load_news()}
+def seen_ids() -> set[tuple[str, str]]:
+    """(종목, 기사 id). 같은 기사가 두 종목에 걸리면 둘 다 따로 센다."""
+    return {(i.ticker, i.item_id) for i in load_news()}
 
 
 def append_news(items: list[Interpretation], now: datetime | None = None) -> None:
@@ -84,11 +85,12 @@ def append_news(items: list[Interpretation], now: datetime | None = None) -> Non
     cutoff = now - timedelta(days=NEWS_RETENTION_DAYS)
     with _lock:
         kept = [i for i in load_news() if i.published_at >= cutoff]
-        known = {i.item_id for i in kept}
+        known = {(i.ticker, i.item_id) for i in kept}
         for item in items:
-            if item.item_id not in known:
+            key = (item.ticker, item.item_id)
+            if key not in known:
                 kept.append(item)
-                known.add(item.item_id)
+                known.add(key)
         tmp = _news_path() + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             for item in kept:
@@ -162,9 +164,38 @@ def load_decisions(username: str, portfolio: str, limit: int = 50) -> list[dict]
 
 # --- 하루 매수 횟수 ---
 
+# 하루의 경계는 한국 시간 자정. UTC 로 자르면 한국 장중(09:00)에 한도가 초기화된다.
+_KST = timezone(timedelta(hours=9))
+
+
 def buys_today(username: str, portfolio: str, now: datetime) -> int:
-    day = now.astimezone(timezone.utc).date().isoformat()
-    return sum(
-        1 for d in load_decisions(username, portfolio, limit=DECISIONS_KEEP)
-        if d.get("action") == "buy" and str(d.get("at", "")).startswith(day)
-    )
+    day = now.astimezone(_KST).date()
+    count = 0
+    for d in load_decisions(username, portfolio, limit=DECISIONS_KEEP):
+        if d.get("action") != "buy":
+            continue
+        try:
+            if datetime.fromisoformat(str(d.get("at"))).astimezone(_KST).date() == day:
+                count += 1
+        except ValueError:
+            continue
+    return count
+
+
+NEWS_ACTIONS = ("buy", "sell", "trim")
+
+
+def last_news_actions(username: str, portfolio: str) -> dict[str, datetime]:
+    """종목별 마지막 뉴스 매매 시각. 종목 쿨다운의 기준."""
+    out: dict[str, datetime] = {}
+    for d in load_decisions(username, portfolio, limit=DECISIONS_KEEP):
+        if d.get("action") not in NEWS_ACTIONS or not d.get("item_ids"):
+            continue   # 손실 브레이크 축소(기사 없음)는 쿨다운을 만들지 않는다
+        t = d.get("ticker")
+        if t in out:
+            continue   # 최신순이라 처음 본 것이 마지막
+        try:
+            out[t] = datetime.fromisoformat(str(d.get("at")))
+        except ValueError:
+            continue
+    return out

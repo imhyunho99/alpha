@@ -106,19 +106,27 @@ def _default_model_fn():
 
 
 def watch_list(keys: list[Key]) -> list[str]:
+    # 보유 종목을 모든 포트폴리오에 걸쳐 먼저 채운다. 상한에 잘리면 그 종목의
+    # 악재를 못 받아 매도 규칙이 발동하지 않는다. 관심 종목은 그다음.
     seen: dict[str, None] = {}
-    for user, portfolio in keys:
-        style = store.load_style(user, portfolio)
-        account, _ = ap_store.load_account(user, portfolio)
+    styles = {k: store.load_style(*k) for k in keys}
+    for k in keys:
+        account, _ = ap_store.load_account(*k)
         for t in list(account.positions) if account else []:
             seen.setdefault(t, None)
+    held = len(seen)
+    for k in keys:
+        style = styles[k]
         for t in style.focus_tickers or DEFAULT_WATCH:
             if t not in style.avoid_tickers:
                 seen.setdefault(t, None)
-    return list(seen)[:WATCH_CAP]
+    return list(seen)[:max(WATCH_CAP, held)]   # 보유 종목은 상한에 잘리지 않는다
 
 
-def cycle(now=None, sources=None, interp=None, prices=None, model_fn=None, keys=None) -> dict:
+_DEFAULT = object()   # model_fn 을 안 넘겼다는 표시. None 은 "모델 쓰지 마" 로 쓴다.
+
+
+def cycle(now=None, sources=None, interp=None, prices=None, model_fn=_DEFAULT, keys=None) -> dict:
     """한 바퀴: 수집 → 해석 → 저장 → 포트폴리오별 판단. 테스트가 전부 주입할 수 있다."""
     from . import sources as src
 
@@ -138,7 +146,7 @@ def cycle(now=None, sources=None, interp=None, prices=None, model_fn=None, keys=
     known = store.seen_ids()
     from .relevance import filter_relevant
 
-    fresh = filter_relevant([i for i in items if i.id not in known])
+    fresh = filter_relevant([i for i in items if (i.ticker, i.id) not in known])
     if fresh:
         store.append_news((interp or interpreter()).interpret(fresh), now=now)
     recent = store.load_news(since=since)
@@ -147,7 +155,7 @@ def cycle(now=None, sources=None, interp=None, prices=None, model_fn=None, keys=
         from ..autopilot.prices import LivePrices
 
         prices = LivePrices()
-    if model_fn is None:
+    if model_fn is _DEFAULT:
         model_fn = _default_model_fn()
 
     for user, portfolio in keys:
@@ -162,11 +170,22 @@ def cycle(now=None, sources=None, interp=None, prices=None, model_fn=None, keys=
 
 
 def run_portfolio(user, portfolio, recent, prices, now, watch, model_fn=None):
+    with ap_store.portfolio_lock(user, portfolio):
+        return _run_portfolio_locked(user, portfolio, recent, prices, now, watch, model_fn)
+
+
+def _run_portfolio_locked(user, portfolio, recent, prices, now, watch, model_fn):
     cfg = ap_store.load_config(user, portfolio)
+    if not cfg.get("active") or cfg.get("mode") != "news":
+        return None   # 잠금을 기다리는 사이 모드가 바뀌었다
     profile = profile_for(int(cfg["temperature"]))
     account, last_rebalance = ap_store.load_account(user, portfolio)
     if account is None:
         account = PaperAccount(cash=float(cfg["capital"]))
+    # 차입 이자. 모델 루프와 같은 계좌 규칙 — 꺼져 있던 시간도 이자는 붙는다.
+    tracked = ap_store.load_tracked_at(user, portfolio)
+    if tracked is not None and account.borrowed > 0:
+        account.accrue_interest(days=max(0.0, (now - tracked).total_seconds() / 86400.0))
     style = store.load_style(user, portfolio)
     weights = store.load_weights(user, portfolio)
     past = store.load_decisions(user, portfolio, limit=store.DECISIONS_KEEP)
@@ -180,6 +199,7 @@ def run_portfolio(user, portfolio, recent, prices, now, watch, model_fn=None):
         buys_today=store.buys_today(user, portfolio, now),
         acted_item_ids=acted,
         model_fn=model_fn,
+        last_action_at=store.last_news_actions(user, portfolio),
     )
     if result.fills and result.skipped is None:
         last_rebalance = now

@@ -101,7 +101,9 @@ def test_does_not_buy_on_weak_news():
 def test_does_not_rebuy_on_news_it_already_acted_on():
     acct = PaperAccount(cash=10_000_000)
     news = [_interp("A", 0.9, title=f"beat {i}") for i in range(3)]
-    acted = {n.item_id for n in news}
+    from alpha_server.newsdesk.engine import acted_key
+
+    acted = {acted_key(n) for n in news}
     _run(acct, news, {"A": 100_000.0}, acted_item_ids=acted)
     assert acct.positions == {}
 
@@ -207,6 +209,11 @@ def isolated(monkeypatch, tmp_path):
     from alpha_server.autopilot import store as ap_store
 
     monkeypatch.setattr(ap_store, "STATE_DIR", str(tmp_path / "autopilot"))
+    from alpha_server.newsdesk import runner
+
+    # 소스별 마지막 실행 시각은 모듈 전역이다. 앞 테스트가 미래 시각을 남기면 수집이 건너뛰어진다.
+    monkeypatch.setattr(runner, "_last_run", {})
+    monkeypatch.setattr(runner, "_model_cache", {})
     return tmp_path
 
 
@@ -257,7 +264,7 @@ def test_cycle_collects_once_and_trades_news_portfolios_only(isolated):
 
     # 두 번째 바퀴: 같은 기사로 또 사지 않는다
     runner.cycle(now=NOW + timedelta(minutes=3), sources=[FakeSource(items)], interp=FakeInterpreter(),
-                 prices=FakePrices({"A": 1e5}), keys=[("kim", "n1")])
+                 prices=FakePrices({"A": 1e5}), model_fn=None, keys=[("kim", "n1")])
     buys = [d for d in store.load_decisions("kim", "n1") if d["action"] == "buy"]
     assert len(buys) == 1
 
@@ -444,3 +451,135 @@ def test_restart_right_after_stop_keeps_loop_alive(monkeypatch):
     runner._thread.join(0.5)
     assert runner._thread.is_alive()
     runner.stop()
+
+
+
+# --- 리뷰에서 나온 회귀 ---
+
+class NegInterpreter(FakeInterpreter):
+    def interpret(self, items):
+        return [
+            Interpretation(i.id, i.ticker, -0.9, 1.0, "other", i.published_at, "fake", i.title, i.url)
+            for i in items
+        ]
+
+
+def test_same_story_does_not_trim_again_every_cycle(isolated):
+    from alpha_server.autopilot import store as ap_store
+    from alpha_server.newsdesk import runner, store
+
+    ap_store.save_config("kim", {"temperature": 5, "capital": 10_000_000, "active": True, "mode": "news"}, "n1")
+    acct = PaperAccount(cash=10_000_000)
+    acct.buy("A", 600_000, 100_000.0, {}, 1.0)
+    ap_store.save_account("kim", acct, None, "n1")
+    store.save_style("kim", "n1", StyleProfile(focus_tickers=["A"]))
+    items = [_item("A", f"Acme (A) probe copy {i}") for i in range(10)]
+
+    qty = []
+    for k in range(4):
+        runner.cycle(now=NOW + timedelta(minutes=3 * k), sources=[FakeSource(items)], interp=NegInterpreter(),
+                     prices=FakePrices({"A": 1e5}), model_fn=None, keys=[("kim", "n1")])
+        qty.append(ap_store.load_account("kim", "n1")[0].positions["A"].quantity)
+    assert qty[0] == pytest.approx(qty[-1])   # 한 번 절반, 그 뒤로는 그대로
+
+
+def test_new_bad_news_within_cooldown_does_not_trim_again():
+    acct = PaperAccount(cash=10_000_000)
+    acct.buy("A", 600_000, 100_000.0, {}, 1.0)
+    before = acct.positions["A"].quantity
+    news = [_interp("A", -0.9, title=f"bad {i}") for i in range(3)]
+    _run(acct, news, {"A": 1e5}, last_action_at={"A": NOW - timedelta(hours=1)})
+    assert acct.positions["A"].quantity == pytest.approx(before)
+
+
+def test_style_sell_rule_ignores_cooldown():
+    acct = PaperAccount(cash=10_000_000)
+    acct.buy("A", 600_000, 100_000.0, {}, 1.0)
+    style = StyleProfile(reactions={"regulation": "sell"})
+    _run(acct, [_interp("A", -0.6, "regulation")], {"A": 1e5}, style=style,
+         last_action_at={"A": NOW - timedelta(minutes=5)})
+    assert "A" not in acct.positions
+
+
+def test_same_article_counts_for_each_ticker(isolated):
+    from alpha_server.newsdesk import store
+
+    a = _interp("NVDA", 0.5, title="chip rally")
+    b = Interpretation(a.item_id, "AMD", 0.5, 1.0, "earnings", a.published_at, "test", a.title)
+    store.append_news([a, b], now=NOW)
+    assert {i.ticker for i in store.load_news()} == {"NVDA", "AMD"}
+    assert ("AMD", a.item_id) in store.seen_ids()
+
+
+def test_naive_timestamps_are_treated_as_utc(isolated):
+    from alpha_server.newsdesk import store
+
+    naive = Interpretation("x1", "A", 0.5, 1.0, "other", datetime(2026, 9, 28, 13, 0), "t", "t")
+    assert naive.published_at.tzinfo is not None
+    store.append_news([naive], now=NOW)
+    assert store.load_news(since=NOW - timedelta(hours=2))
+
+
+def test_news_mode_charges_margin_interest(isolated, monkeypatch):
+    from alpha_server.autopilot import store as ap_store
+    from alpha_server.newsdesk import runner
+
+    ap_store.save_config("kim", {"temperature": 8, "capital": 1e7, "active": True, "mode": "news"}, "n1")
+    acct = PaperAccount(cash=10_000_000)
+    acct.buy("A", 12_000_000, 100_000.0, {}, 1.5)
+    borrowed = acct.borrowed
+    ap_store.save_account("kim", acct, None, "n1", last_tracked_at=NOW - timedelta(days=10))
+    from alpha_server.newsdesk.engine import NewsStepResult
+
+    # 매매는 끄고 이자만 본다(목표 초과분을 팔면 차입이 상환돼 효과가 가려진다)
+    monkeypatch.setattr(runner, "news_step", lambda account, *a, **k: NewsStepResult(NOW, account.equity({"A": 1e5})))
+    runner.run_portfolio("kim", "n1", [], FakePrices({"A": 1e5}), NOW, ["A"], None)
+    assert ap_store.load_account("kim", "n1")[0].borrowed > borrowed
+
+
+def test_daily_buy_limit_resets_at_korean_midnight(isolated):
+    from alpha_server.newsdesk import store
+
+    kst_morning = datetime(2026, 9, 28, 1, 0, tzinfo=timezone.utc)   # 10:00 KST
+    store.append_decisions("kim", "n1", [
+        {"at": datetime(2026, 9, 27, 16, 0, tzinfo=timezone.utc).isoformat(), "action": "buy"},  # 9/28 01:00 KST
+        {"at": datetime(2026, 9, 27, 14, 0, tzinfo=timezone.utc).isoformat(), "action": "buy"},  # 9/27 23:00 KST
+    ])
+    assert store.buys_today("kim", "n1", kst_morning) == 1
+
+
+def test_style_cap_never_loosens_temperature_cap():
+    acct = PaperAccount(cash=10_000_000)
+    news = [_interp("A", 0.9, hours_ago=0, title=f"beat {i}") for i in range(4)]
+    _run(acct, news, {"A": 1e5}, style=StyleProfile(max_position_pct=50), temp=1)
+    value = acct.positions["A"].quantity * 1e5
+    assert value <= 10_000_000 * profile_for(1).max_position_pct / 100 + 1
+
+
+def test_watch_list_never_cuts_holdings(isolated, monkeypatch):
+    from alpha_server.autopilot import store as ap_store
+    from alpha_server.newsdesk import runner, store
+
+    monkeypatch.setattr(runner, "WATCH_CAP", 3)
+    acct = PaperAccount(cash=1e7)
+    for t in ("H1", "H2"):
+        acct.buy(t, 100_000, 1000.0, {}, 1.0)
+    ap_store.save_account("kim", acct, None, "p2")
+    store.save_style("kim", "p1", StyleProfile(focus_tickers=["F1", "F2", "F3", "F4"]))
+    watch = runner.watch_list([("kim", "p1"), ("kim", "p2")])
+    assert {"H1", "H2"} <= set(watch)
+
+
+def test_config_keeps_mode_when_omitted_and_stops_old_loop_on_switch(api_client, monkeypatch):
+    from alpha_server.autopilot import api as ap_api
+
+    stopped = []
+    monkeypatch.setattr(ap_api, "stop_live", lambda u, p=None: stopped.append(p))
+    base = {"temperature": 5, "capital": 1e7, "portfolio": "n1"}
+    api_client.put("/autopilot/config", json={**base, "active": False, "mode": "news"})
+    stopped.clear()
+    r = api_client.put("/autopilot/config", json={**base, "active": False})   # 모드 생략
+    assert r.json()["mode"] == "news"
+    r = api_client.put("/autopilot/config", json={**base, "active": False, "mode": "model"})
+    assert r.json()["mode"] == "model"
+    assert "n1" in stopped

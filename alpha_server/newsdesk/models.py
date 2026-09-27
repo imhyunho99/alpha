@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 # 뉴스 종류. 스타일 규칙("규제 뉴스면 정리")과 신호별 신뢰도가 이 단위로 움직인다.
 CATEGORIES: tuple[str, ...] = (
@@ -33,6 +33,11 @@ REACTIONS: tuple[str, ...] = (
 )
 
 
+def _aware(dt: datetime) -> datetime:
+    """시간대 없는 시각이 하나라도 섞이면 비교에서 TypeError 로 루프 전체가 멈춘다."""
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
 def news_id(source: str, url: str, title: str) -> str:
     """같은 기사를 두 번 세지 않기 위한 키. URL 이 없으면 제목으로."""
     basis = url.strip() or f"{source}:{title.strip().lower()}"
@@ -50,6 +55,9 @@ class NewsItem:
     lang: str              # "en" | "ko"
     published_at: datetime  # UTC, tz-aware
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "published_at", _aware(self.published_at))
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["published_at"] = self.published_at.isoformat()
@@ -57,7 +65,7 @@ class NewsItem:
 
     @classmethod
     def from_dict(cls, d: dict) -> "NewsItem":
-        return cls(**{**d, "published_at": datetime.fromisoformat(d["published_at"])})
+        return cls(**{**d, "published_at": _aware(datetime.fromisoformat(d["published_at"]))})
 
 
 @dataclass(frozen=True)
@@ -72,6 +80,9 @@ class Interpretation:
     title: str = ""
     url: str = ""
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "published_at", _aware(self.published_at))
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["published_at"] = self.published_at.isoformat()
@@ -79,7 +90,7 @@ class Interpretation:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Interpretation":
-        return cls(**{**d, "published_at": datetime.fromisoformat(d["published_at"])})
+        return cls(**{**d, "published_at": _aware(datetime.fromisoformat(d["published_at"]))})
 
 
 @dataclass
