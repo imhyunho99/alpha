@@ -90,3 +90,89 @@ def test_interpretation_cache_skips_done_items(tmp_path):
     assert len(B.interpret_cached(items, Count(), path)) == 3
     assert len(B.interpret_cached(items, Count(), path)) == 3
     assert calls == [3]
+
+
+
+# --- 연구 기반 변형 ---
+
+from alpha_server.newsdesk import signals as SG  # noqa: E402
+from alpha_server.newsdesk.novelty import mark_novelty  # noqa: E402
+
+
+def test_defensive_holds_the_basket_without_any_news():
+    prices = B.NextClosePrices({t: _frame("2026-06-01", [100.0] * 20) for t in ("A", "B")}, rates=1.0)
+    rep = B.run(StyleProfile(focus_tickers=["A", "B"]), 5, 1e7, [], prices,
+                datetime(2026, 6, 1, tzinfo=UTC), datetime(2026, 6, 20, tzinfo=UTC), ["A", "B"],
+                params=SG.PARAMS_DEFENSIVE)
+    buys = [d for d in rep.decisions if d["action"] == "buy"]
+    assert {d["ticker"] for d in buys} == {"A", "B"}
+    assert rep.avg_invested_pct == pytest.approx(14, abs=1)   # 온도 5 종목 상한 7% × 2종목
+
+
+def test_defensive_exits_on_bad_news_and_stays_out_for_weeks():
+    closes = [100.0] * 60
+    prices = B.NextClosePrices({"A": _frame("2026-06-01", closes)}, rates=1.0)
+    bad_day = datetime(2026, 6, 10, tzinfo=UTC)
+    bad = [_interp("A", bad_day, sentiment=-0.9, title=f"probe {i}") for i in range(6)]
+    rep = B.run(StyleProfile(focus_tickers=["A"]), 5, 1e7, bad, prices,
+                datetime(2026, 6, 1, tzinfo=UTC), datetime(2026, 8, 1, tzinfo=UTC), ["A"],
+                params=SG.PARAMS_DEFENSIVE)
+    sells = [d for d in rep.decisions if d["action"] == "sell"]
+    assert sells and "4주 이탈" in sells[0]["reason"]
+    sold_at = datetime.fromisoformat(sells[0]["at"])
+    rebuys = [d for d in rep.decisions if d["action"] == "buy" and datetime.fromisoformat(d["at"]) > sold_at]
+    assert rebuys and datetime.fromisoformat(rebuys[0]["at"]) >= sold_at + timedelta(days=28)
+    assert "복귀" in rebuys[0]["reason"]
+
+
+def test_hold_only_control_ignores_news():
+    prices = B.NextClosePrices({"A": _frame("2026-06-01", [100.0] * 40)}, rates=1.0)
+    bad = [_interp("A", datetime(2026, 6, 10, tzinfo=UTC), sentiment=-0.9, title=f"p {i}") for i in range(6)]
+    rep = B.run(StyleProfile(focus_tickers=["A"]), 5, 1e7, bad, prices,
+                datetime(2026, 6, 1, tzinfo=UTC), datetime(2026, 7, 1, tzinfo=UTC), ["A"],
+                params=SG.PARAMS_HOLD_ONLY)
+    assert not [d for d in rep.decisions if d["action"] == "sell"]
+
+
+def test_earnings_buys_can_be_switched_off():
+    closes = [100.0] * 15
+    prices = B.NextClosePrices({"AAA": _frame("2026-06-01", closes)}, rates=1.0)
+    interps = [_interp("AAA", datetime(2026, 6, 3, tzinfo=UTC), title=f"beat {i}") for i in range(9)]
+    args = (StyleProfile(focus_tickers=["AAA"]), 5, 1e7, interps, prices,
+            datetime(2026, 6, 1, tzinfo=UTC), datetime(2026, 6, 15, tzinfo=UTC), ["AAA"])
+    assert B.run(*args).trades >= 1
+    assert B.run(*args, params=SG.NewsParams(earnings_buys=False)).trades == 0
+
+
+def test_weekly_window_keeps_news_alive_longer():
+    from alpha_server.newsdesk import weights as W
+
+    w = W.WeightState(trust={}, pending=[], peak_equity=0, history=[])
+    day = datetime(2026, 6, 1, tzinfo=UTC)
+    item = _interp("A", day, sentiment=-0.8)
+    later = day + timedelta(days=4)
+    assert SG.news_score("A", [item], w, StyleProfile(), later)[0] == 0
+    assert SG.news_score("A", [item], w, StyleProfile(), later, SG.PARAMS_DEFENSIVE)[0] < 0
+
+
+def test_novelty_marks_rewrites_of_the_same_story():
+    d = datetime(2026, 6, 1, 7, tzinfo=UTC)
+    a = Interpretation("1", "NVDA", 0.5, 1, "other", d, "t", "Nvidia beats estimates on data center demand")
+    b = Interpretation("2", "NVDA", 0.5, 1, "other", d + timedelta(hours=5), "t", "Nvidia beats estimates, data center demand surges")
+    c = Interpretation("3", "NVDA", 0.5, 1, "other", d + timedelta(days=5), "t", "Nvidia beats estimates on data center demand")
+    e = Interpretation("4", "AMD", 0.5, 1, "other", d + timedelta(hours=5), "t", "Nvidia beats estimates on data center demand")
+    out = {i.item_id: i.novel for i in mark_novelty([a, b, c, e])}
+    assert out == {"1": True, "2": False, "3": True, "4": True}
+
+
+def test_novelty_filter_drops_repeats_from_the_score():
+    from alpha_server.newsdesk import weights as W
+
+    w = W.WeightState(trust={}, pending=[], peak_equity=0, history=[])
+    d = datetime(2026, 6, 1, 7, tzinfo=UTC)
+    items = mark_novelty([
+        Interpretation(str(i), "A", -0.9, 1, "other", d, "t", "Acme recalls widgets over fire risk") for i in range(4)
+    ])
+    full, _ = SG.news_score("A", items, w, StyleProfile(), d)
+    novel, _ = SG.news_score("A", items, w, StyleProfile(), d, SG.NewsParams(novelty_filter=True))
+    assert abs(novel) < abs(full)

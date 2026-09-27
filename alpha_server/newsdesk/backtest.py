@@ -24,7 +24,7 @@ from ..autopilot.temperature import profile_for
 from . import weights as W
 from .engine import news_step
 from .models import Interpretation, NewsItem, StyleProfile
-from .signals import MAX_AGE_HOURS
+from .signals import PARAMS_CURRENT, NewsParams
 
 # 일봉 날짜 → 그 봉이 확정되는 UTC 시각
 _US_CLOSE = timedelta(hours=21)             # 뉴욕 16:00 (서머타임 20:00, 늦은 쪽으로)
@@ -132,6 +132,7 @@ def run(
     end: datetime,
     watch: list[str],
     step_hour_utc: int = 22,
+    params: NewsParams = PARAMS_CURRENT,
 ) -> BacktestReport:
     profile = profile_for(temperature)
     account = PaperAccount(cash=capital)
@@ -141,13 +142,14 @@ def run(
     acted: set[str] = set()
     last_action: dict[str, datetime] = {}
     buys_by_day: dict = {}
+    benched: dict[str, datetime] = {}
     report = BacktestReport(start=start.isoformat(), end=end.isoformat(), articles=len(interps))
     invested = []
     peak, mdd = capital, 0.0
 
     at = start.replace(hour=step_hour_utc, minute=0, second=0, microsecond=0)
     while at < end:
-        lo = bisect.bisect_left(stamps, at - timedelta(hours=MAX_AGE_HOURS))
+        lo = bisect.bisect_left(stamps, at - timedelta(hours=params.max_age_hours))
         hi = bisect.bisect_right(stamps, at)
         window = interps[lo:hi]
         day = at.astimezone(_KST).date()
@@ -157,6 +159,7 @@ def run(
             Journal(actor="backtest", mirror_audit=False),
             watch=watch, buys_today=buys_by_day.get(day, 0),
             acted_item_ids=acted, model_fn=None, last_action_at=last_action,
+            params=params, benched=benched,
         )
         for d in result.decisions:
             acted.update(d.get("item_ids", []))

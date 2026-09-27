@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable
 
 from ..autopilot.account import Fill, PaperAccount
@@ -19,7 +19,7 @@ from ..autopilot.journal import Journal
 from ..autopilot.temperature import RiskProfile
 from . import weights as W
 from .models import Interpretation, StyleProfile
-from .signals import dominant_category, news_score, signal_key, threshold
+from .signals import PARAMS_CURRENT, NewsParams, dominant_category, news_score, signal_key, threshold
 
 # 목표와 이만큼 이상 차이 나야 거래한다. 3분마다 도는 루프라 좁으면 매매 비용만 쌓인다.
 TOLERANCE = 0.10
@@ -118,11 +118,19 @@ def news_step(
     acted_item_ids: set[str] | None = None,
     model_fn: ModelFn | None = None,
     last_action_at: dict[str, datetime] | None = None,
+    params: NewsParams = PARAMS_CURRENT,
+    benched: dict[str, datetime] | None = None,
 ) -> NewsStepResult:
     acted = set(acted_item_ids or ())
+    # `benched or {}` 로 쓰면 빈 dict 를 받았을 때 새 dict 를 만들어, 여기서 기록한 이탈이
+    # 호출한 쪽에 전해지지 않는다(테스트로 잡음: 4주 이탈이 3일 만에 풀림).
+    if benched is None:
+        benched = {}
     held_now = set(account.positions)
     # 회피 종목은 새로 보지 않되, 이미 들고 있으면 가격은 받아야 한다(가드·손절).
     universe = sorted((set(watch) - set(style.avoid_tickers)) | held_now)
+    if params.policy == "defensive":
+        universe = sorted(set(universe) | (set(style.focus_tickers) - set(style.avoid_tickers)))
     snapshot = prices.get_many(universe, at)
     decisions: list[dict] = []
 
@@ -153,13 +161,17 @@ def news_step(
     W.update_peak(weights, equity)
     exposure = W.exposure_multiplier(
         equity, weights.peak_equity, style.drawdown_soft_pct, style.drawdown_hard_pct,
-    )
+    ) if params.loss_weights else 1.0
     drawdown = 0.0 if weights.peak_equity <= 0 else max(0.0, (weights.peak_equity - equity) / weights.peak_equity * 100)
 
     thr = threshold(style)
     scores: dict[str, tuple[float, list]] = {}
     for t in universe:
-        scores[t] = news_score(t, interps, weights, style, at)
+        scores[t] = news_score(t, interps, weights, style, at, params)
+
+    if params.policy == "defensive":
+        return _defensive(account, profile, style, weights, snapshot, at, journal, decisions, fills,
+                          scores, thr, exposure, drawdown, acted, benched, buys_today, params)
 
     # 3) 악재 이벤트 매도
     for t in list(account.positions):
@@ -245,7 +257,8 @@ def news_step(
             if t in style.avoid_tickers or snapshot.get(t) is None:
                 continue
             score, parts = scores.get(t, (0.0, []))
-            fresh_pos = [p for p in parts if p.value > 0 and acted_key(p.item) not in acted]
+            fresh_pos = [p for p in parts if p.value > 0 and acted_key(p.item) not in acted
+                         and (params.earnings_buys or p.item.category != "earnings")]
             fresh_pos.sort(key=lambda p: p.value, reverse=True)
             rule_buy = [
                 p for p in fresh_pos
@@ -311,3 +324,107 @@ def news_step(
         at, account.equity(snapshot), fills, decisions,
         exposure=exposure, drawdown_pct=drawdown,
     )
+
+
+def _defensive(account, profile, style, weights, snapshot, at, journal, decisions, fills,
+               scores, thr, exposure, drawdown, acted, benched, buys_today, params) -> NewsStepResult:
+    """기본은 관심 종목을 나눠 들고 있고, 악재가 쌓인 종목만 몇 주 빼 둔다.
+
+    근거: 악재는 최대 한 분기 동안 추가 하락을 예고하지만 호재는 1주 안에 반영된다
+    (Heston & Sinha). 롱 전용 계좌가 이 비대칭을 쓰는 방법은 '악재에 빠지기'뿐이다.
+    이탈 기간은 며칠이 아니라 몇 주(유의한 시차 1~6주)여야 한다.
+    """
+    core = [t for t in style.focus_tickers if t not in style.avoid_tickers and t in snapshot]
+    equity = account.equity(snapshot)
+    slots = max(1, len(core))
+    deployable = equity * (100.0 - profile.cash_floor_pct) / 100.0 * profile.max_leverage * exposure
+    cap_pct = min(style.max_position_pct, profile.max_position_pct) if style.max_position_pct else profile.max_position_pct
+    # 관심 종목 수만큼 나눠 담는다. 온도의 종목 상한('한 종목에 몰지 말라')은 여기서도 지킨다.
+    base_target = min(deployable / slots, equity * cap_pct / 100.0)
+
+    # 악재 이탈
+    if params.core_exits:
+        for t in list(account.positions):
+            price = snapshot.get(t)
+            if price is None:
+                continue
+            score, parts = scores.get(t, (0.0, []))
+            rule_hits = [
+                p for p in parts
+                if acted_key(p.item) not in acted
+                and style.reactions.get(p.item.category) == "sell" and p.item.sentiment <= SELL_RULE_SENTIMENT
+            ]
+            if score > -thr and not rule_hits:
+                continue
+            fill = account.sell(t, account.positions[t].quantity, price)
+            if not fill:
+                continue
+            fills.append(fill)
+            until = at + timedelta(days=params.exit_days)
+            benched[t] = until
+            cat = rule_hits[0].item.category if rule_hits else dominant_category(parts, -1)
+            W.record_signal(weights, signal_key(cat), t, -1, price, at)
+            journal.record("news_exit", at=at, ticker=t, score=round(score, 2))
+            why = (f"스타일 규칙: {category_ko(cat)} 악재" if rule_hits
+                   else f"악재 누적(주간 점수 {score:+.2f}, 기준 -{thr:.2f})")
+            d = _decision(at, "sell", t, f"{why} → {params.exit_days / 7:.0f}주 이탈",
+                          fill.gross, [p.item for p in parts if p.value < 0][:3],
+                          consumed=[p.item for p in parts])
+            d["until"] = until.isoformat()
+            decisions.append(d)
+            acted.update(acted_key(p.item) for p in parts)
+
+    # 비중 조정(손실 브레이크·종목 손실) — 공격형과 같은 규칙
+    for t in list(account.positions):
+        price = snapshot.get(t)
+        if price is None:
+            continue
+        pnl = _pnl_pct(account, t, price)
+        mult = W.ticker_multiplier(pnl) if params.loss_weights else 1.0
+        target = base_target * mult if t in core else 0.0
+        current = account.positions[t].quantity * price
+        excess = current - target
+        if excess > max(target * TOLERANCE, MIN_TRADE_KRW):
+            fill = account.sell(t, excess / price, price)
+            if fill:
+                fills.append(fill)
+                why = []
+                if t not in core:
+                    why.append("관심 종목에서 빠짐")
+                if exposure < 1.0:
+                    why.append(f"손실 브레이크(고점 대비 -{drawdown:.1f}% → 투자 비중 {exposure * 100:.0f}%)")
+                if mult < 1.0:
+                    why.append(f"종목 손실 {pnl:+.1f}% → 비중 {mult:.2f}배")
+                decisions.append(_decision(at, "trim", t, " · ".join(why) or "목표 비중 초과", fill.gross))
+
+    # 기본 보유 편입/복귀 — 뉴스가 방아쇠가 아니다
+    budget = max(0, style.max_daily_buys - buys_today)
+    for t in core:
+        if budget <= 0:
+            break
+        until = benched.get(t)
+        if until is not None and at < until:
+            continue
+        score, _ = scores.get(t, (0.0, []))
+        if params.core_exits and score <= -thr:
+            continue
+        price = snapshot[t]
+        held = account.positions.get(t)
+        mult = W.ticker_multiplier(_pnl_pct(account, t, price)) if held and params.loss_weights else 1.0
+        target = base_target * mult
+        current = held.quantity * price if held else 0.0
+        gap = target - current
+        if gap <= max(target * TOLERANCE, MIN_TRADE_KRW):
+            continue
+        fill = account.buy(t, gap, price, snapshot, profile.max_leverage)
+        if not fill:
+            continue
+        fills.append(fill)
+        budget -= 1
+        benched.pop(t, None)
+        journal.record("news_core_buy", at=at, ticker=t, amount=gap)
+        reason = "이탈 기간 끝 → 기본 보유 복귀" if until is not None else "기본 보유 편입"
+        decisions.append(_decision(at, "buy", t, reason, gap))
+
+    return NewsStepResult(at, account.equity(snapshot), fills, decisions,
+                          exposure=exposure, drawdown_pct=drawdown)

@@ -79,6 +79,7 @@ class Interpretation:
     model: str              # "lexicon" | "finbert" | ...
     title: str = ""
     url: str = ""
+    novel: bool = True      # 최근 같은 종목에 비슷한 제목이 없었다(novelty.mark_novelty)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "published_at", _aware(self.published_at))
