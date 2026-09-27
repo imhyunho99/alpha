@@ -130,11 +130,22 @@ _VERB_PATTERNS: dict[str, re.Pattern[str]] = {
     "amplify": re.compile(r"민감|예민|크게|강하게|중요하게|(?<![A-Za-z])(?:amplify|strongly|heavily|more weight)(?![A-Za-z])", re.I),
 }
 
+# "팔지 마" 를 sell 로 읽으면 정반대로 매매한다. 동사보다 먼저 찾아 그 자리를 막는다.
+_NEGATED_VERB = re.compile(
+    r"(?:매도|정리|청산|처분|손절|매수|무시|편입)\s*(?:을|를)?\s*하지\s*(?:마|말|않)"
+    r"|(?:팔|사|털|담)지\s*(?:마|말|않)"
+    r"|(?<![A-Za-z])(?:don['’]?t|do not|never|no need to)\s+(?:sell|buy|exit|dump|ignore|add)(?![A-Za-z])",
+    re.I,
+)
+_NEGATION_NOTE = "부정형이라 반응 규칙으로 쓰지 않음"
+
 # 한국어는 앞의 종목을, 영어는 뒤의 종목을 가리킨다("테슬라는 빼고" / "except TSLA").
 _AVOID_KO = re.compile(r"빼고|빼줘|빼|제외|사지\s*마|사지\s*말|매수하지\s*마|피해|말고|안\s*사")
-_AVOID_EN = re.compile(r"(?<![A-Za-z])(?:avoid|except|exclud(?:e|ing)|stay away from|don't buy|never buy)(?![A-Za-z])", re.I)
-# 한국어 회피 범위의 왼쪽 끝. "AI 위주로 하되 테슬라는 빼고" 에서 AI 까지 빼지 않도록.
-_AVOID_KO_BOUNDARY = re.compile(r"위주|중심|하되|지만|는데|그리고|대신")
+_AVOID_EN = re.compile(r"(?<![A-Za-z])(?:avoid|except|exclud(?:e|ing)|stay away from|don['’]?t buy|never buy)(?![A-Za-z])", re.I)
+# 회피 대상은 회피 동사에 붙은 "나열"이다. 종목 사이가 쉼표·조사·접속사뿐일 때만 이어 간다.
+# "AI 위주로 테슬라, 애플은 빼고" 에서 " 위주로 " 는 나열이 아니므로 AI 는 빠지지 않는다.
+_LIST_GAP = re.compile(
+    r"^(?:은|는|도|을|를|이|가)?[\s,/&·]*(?:(?:and|or|및|이랑|랑|과|와|하고|이나|나)[\s,/&·]*)?$", re.I)
 # 두 뉴스 종류 사이가 이것뿐이면 한 동사를 같이 쓴다("소송이나 과징금 뉴스면 팔아").
 _CONNECTOR = re.compile(r"^[\s,/&]*(?:and|or|및|이나|나|과|와|이랑|랑|하고)?[\s,/&]*$", re.I)
 
@@ -167,7 +178,9 @@ _NAME_PATTERN = re.compile(
 )
 _NAME_LOOKUP = {n.lower(): t for n, t in NAME_TICKERS.items()}
 
-_CLAUSE_SPLIT = re.compile(r"[,;!?\n]|\.(?![A-Za-z0-9])")
+# 회피 나열은 쉼표를 넘나들므로 문장 단위로, 반응 규칙은 쉼표 절 단위로 읽는다.
+_SENTENCE_SPLIT = re.compile(r"[;!?\n]|\.(?![A-Za-z0-9])")
+_CLAUSE = re.compile(r"[^,]+")
 _HANGUL = re.compile(r"[가-힣]")
 
 
@@ -184,8 +197,8 @@ def _mask(text: str, start: int, end: int) -> str:
     return text[:start] + " " * (end - start) + text[end:]
 
 
-def _read_reactions(clause: str) -> tuple[dict[str, str], str]:
-    """뉴스 종류별 반응과, 쓴 키워드·동사를 지운 절을 돌려준다."""
+def _read_reactions(clause: str) -> tuple[dict[str, str], str, list[tuple[int, int, str | None]]]:
+    """뉴스 종류별 반응, 쓴 키워드·동사를 지운 절, 부정형 목록 (start, end, 붙은 category) 을 돌려준다."""
     hits = sorted(
         (m.start(), m.end(), cat)
         for cat, pat in _CATEGORY_PATTERNS.items()
@@ -196,13 +209,16 @@ def _read_reactions(clause: str) -> tuple[dict[str, str], str]:
     for h in hits:
         if not kws or h[0] >= kws[-1][1]:
             kws.append(h)
+    negations = [(m.start(), m.end(), "negated") for m in _NEGATED_VERB.finditer(clause)]
     if not kws:
-        return {}, clause
+        return {}, clause, [(a, b, None) for a, b, _ in negations]
 
     verbs = sorted(
-        (m.start(), m.end(), reaction)
-        for reaction, pat in _VERB_PATTERNS.items()
-        for m in pat.finditer(clause)
+        [(m.start(), m.end(), reaction)
+         for reaction, pat in _VERB_PATTERNS.items()
+         for m in pat.finditer(clause)
+         if not any(a < m.end() and m.start() < b for a, b, _ in negations)]
+        + negations
     )
     korean = bool(_HANGUL.search(clause))
     chosen: list[tuple[int, int, str] | None] = []
@@ -227,13 +243,17 @@ def _read_reactions(clause: str) -> tuple[dict[str, str], str]:
 
     reactions: dict[str, str] = {}
     masked = clause
+    attached: dict[tuple[int, int], str | None] = {(a, b): None for a, b, _ in negations}
     for (start, end, cat), verb in zip(kws, chosen):
         if verb is None:
             continue
-        reactions[cat] = verb[2]
+        if verb[2] == "negated":
+            attached[(verb[0], verb[1])] = cat
+        else:
+            reactions[cat] = verb[2]
         masked = _mask(masked, start, end)
         masked = _mask(masked, verb[0], verb[1])
-    return reactions, masked
+    return reactions, masked, [(a, b, cat) for (a, b), cat in attached.items()]
 
 
 def _read_entities(clause: str) -> list[_Entity]:
@@ -263,17 +283,34 @@ def _read_entities(clause: str) -> list[_Entity]:
     return sorted(found, key=lambda e: e.start)
 
 
-def _avoided(clause: str, entities: list[_Entity]) -> set[int]:
-    """회피 표현이 가리키는 엔티티의 인덱스."""
+def _avoided(text: str, entities: list[_Entity]) -> tuple[set[int], list[tuple[int, int]]]:
+    """회피 표현이 가리키는 엔티티의 인덱스와, 실제로 무언가를 가리킨 회피 표현의 위치."""
     out: set[int] = set()
-    for m in _AVOID_EN.finditer(clause):
-        out |= {i for i, e in enumerate(entities) if e.start >= m.end()}
-    for m in _AVOID_KO.finditer(clause):
-        left = 0
-        for b in list(_AVOID_KO_BOUNDARY.finditer(clause, 0, m.start())) + list(_AVOID_KO.finditer(clause, 0, m.start())):
-            left = max(left, b.end())
-        out |= {i for i, e in enumerate(entities) if e.start >= left and e.end <= m.start()}
-    return out
+    used: list[tuple[int, int]] = []
+    for m in _AVOID_EN.finditer(text):
+        edge, hit = m.end(), False
+        for i, e in enumerate(entities):
+            if e.start < m.end():
+                continue
+            if not _LIST_GAP.match(text[edge:e.start]):
+                break
+            out.add(i)
+            edge, hit = e.end, True
+        if hit:
+            used.append((m.start(), m.end()))
+    for m in _AVOID_KO.finditer(text):
+        edge, hit = m.start(), False
+        for i in range(len(entities) - 1, -1, -1):
+            e = entities[i]
+            if e.end > m.start():
+                continue
+            if not _LIST_GAP.match(text[e.end:edge]):
+                break
+            out.add(i)
+            edge, hit = e.start, True
+        if hit:
+            used.append((m.start(), m.end()))
+    return out, used
 
 
 def _first_number(patterns: list[re.Pattern[str]], text: str) -> float | None:
@@ -307,16 +344,30 @@ def parse_style(text: str) -> StyleProfile:
     focus_sectors: list[str] = []
     avoid_sectors: list[str] = []
     direct: list[str] = []
+    negation_notes: list[str] = []
     sensitivity: float | None = None
 
-    for clause in _CLAUSE_SPLIT.split(text):
-        if not clause.strip():
+    for sentence in _SENTENCE_SPLIT.split(text):
+        if not sentence.strip():
             continue
-        clause_reactions, masked = _read_reactions(clause)
-        reactions.update(clause_reactions)  # 같은 종류를 두 번 말하면 나중 말이 이긴다
+        # 절마다 반응을 읽고, 지운 결과를 문장 위치 그대로 다시 이어 붙인다(길이 보존).
+        masked = sentence
+        negations: list[tuple[int, int, str | None]] = []
+        for c in _CLAUSE.finditer(sentence):
+            clause_reactions, masked_clause, clause_negs = _read_reactions(c.group(0))
+            reactions.update(clause_reactions)  # 같은 종류를 두 번 말하면 나중 말이 이긴다
+            masked = masked[:c.start()] + masked_clause + masked[c.end():]
+            negations.extend((a + c.start(), b + c.start(), cat) for a, b, cat in clause_negs)
 
         entities = _read_entities(masked)
-        avoided = _avoided(masked, entities)
+        avoided, used_markers = _avoided(masked, entities)
+        for a, b, cat in negations:
+            # "테슬라는 사지 마" 는 회피 규칙으로 이미 쓰였다
+            if cat is None and any(x < b and a < y for x, y in used_markers):
+                continue
+            phrase = sentence[a:b]
+            prefix = f"{CATEGORY_LABELS.get(cat, cat)} 뉴스 " if cat else ""
+            negation_notes.append(f"{prefix}'{phrase}' → {_NEGATION_NOTE}")
         for i, e in enumerate(entities):
             if i in avoided:
                 avoid.extend(e.tickers)
@@ -355,6 +406,7 @@ def parse_style(text: str) -> StyleProfile:
         notes.append(f"제외 종목: {', '.join(avoid)} (매수하지 않음)")
     for cat, reaction in reactions.items():
         notes.append(_reaction_note(cat, reaction))
+    notes.extend(negation_notes)
 
     if sensitivity is not None:
         profile.news_sensitivity = sensitivity
