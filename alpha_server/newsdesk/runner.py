@@ -134,7 +134,9 @@ def cycle(now=None, sources=None, interp=None, prices=None, model_fn=None, keys=
     items = src.collect(sources if sources is not None else src.default_sources(),
                         watch, since, now=now, last_run=_last_run)
     known = store.seen_ids()
-    fresh = [i for i in items if i.id not in known]
+    from .relevance import filter_relevant
+
+    fresh = filter_relevant([i for i in items if i.id not in known])
     if fresh:
         store.append_news((interp or interpreter()).interpret(fresh), now=now)
     recent = store.load_news(since=since)

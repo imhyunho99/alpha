@@ -243,7 +243,7 @@ def test_cycle_collects_once_and_trades_news_portfolios_only(isolated):
     ap_store.save_config("kim", {"temperature": 5, "capital": 10_000_000, "active": True, "mode": "model"}, "m1")
     store.save_style("kim", "n1", StyleProfile(focus_tickers=["A"]))
 
-    items = [_item("A", f"A beats {i}") for i in range(3)]
+    items = [_item("A", f"Acme (A) beats {i}") for i in range(3)]
     summary = runner.cycle(
         now=NOW, sources=[FakeSource(items)], interp=FakeInterpreter(),
         prices=FakePrices({"A": 1e5}), model_fn=None, keys=[("kim", "n1"), ("kim", "m1")],
@@ -373,3 +373,56 @@ def test_config_rejects_unknown_mode(api_client):
         "temperature": 5, "capital": 1000, "active": False, "mode": "yolo",
     })
     assert r.status_code == 422
+
+
+# --- 관련성 ---
+
+def _news(ticker, title, source="google_news", summary=""):
+    return NewsItem(news_id(source, "", title), ticker, title, summary, "", source, "en", NOW)
+
+
+def test_relevance_drops_articles_about_other_companies():
+    from alpha_server.newsdesk.relevance import is_relevant
+
+    assert not is_relevant(_news("GOOGL", "Meta's Muse, AI Hardware Push Could Drive New Revenue"))
+    assert not is_relevant(_news("NVDA", "1 Overlooked Dividend King With a 55-Year Winning Streak"))
+    assert is_relevant(_news("GOOGL", "Google cloud revenue jumps 30%"))
+    assert is_relevant(_news("NVDA", "Why NVDA shares rallied today"))
+    assert is_relevant(_news("005930.KS", "삼성전자 3분기 역대급 실적"))
+    assert is_relevant(_news("AAPL", "8-K: Item 2.02", source="sec_8k"))
+
+
+def test_short_tickers_need_explicit_marking():
+    from alpha_server.newsdesk.relevance import is_relevant
+
+    assert not is_relevant(_news("F", "F is for failure: markets slump"))
+    assert is_relevant(_news("F", "Ford Motor recalls 100k trucks"))
+    assert is_relevant(_news("F", "Shares of (F) slid after guidance cut"))
+
+
+def test_rule_buy_needs_a_strong_article():
+    acct = PaperAccount(cash=10_000_000)
+    style = StyleProfile(reactions={"earnings": "buy"})
+    _run(acct, [_interp("A", 0.35)], {"A": 1e5}, style=style)
+    assert acct.positions == {}
+    _run(acct, [_interp("A", 0.8, title="strong beat")], {"A": 1e5}, style=style)
+    assert "A" in acct.positions
+
+
+def test_rule_buy_blocked_when_overall_flow_is_negative():
+    acct = PaperAccount(cash=10_000_000)
+    style = StyleProfile(reactions={"earnings": "buy"})
+    news = [_interp("A", 0.8, title="beat")] + [_interp("A", -0.9, "legal", title=f"suit {i}") for i in range(3)]
+    _run(acct, news, {"A": 1e5}, style=style)
+    assert acct.positions == {}
+
+
+def test_rule_buy_halves_threshold_but_does_not_bypass_it():
+    style = StyleProfile(reactions={"earnings": "buy"})
+    mixed = [_interp("A", 0.8, title="beat"), _interp("A", -0.5, "legal", title="suit")]
+    acct = PaperAccount(cash=10_000_000)
+    _run(acct, mixed, {"A": 1e5}, style=style)          # 점수 ~0.2 < 0.5
+    assert acct.positions == {}
+    acct2 = PaperAccount(cash=10_000_000)
+    _run(acct2, [_interp("A", 0.8, hours_ago=0, title="beat")], {"A": 1e5}, style=style)  # 0.8 ≥ 0.5
+    assert "A" in acct2.positions

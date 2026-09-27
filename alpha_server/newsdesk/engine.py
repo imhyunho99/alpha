@@ -27,7 +27,11 @@ TOLERANCE = 0.10
 MIN_TRADE_KRW = 50_000
 # "sell" 반응을 발동시키는 악재 강도
 SELL_RULE_SENTIMENT = -0.3
-BUY_RULE_SENTIMENT = 0.3
+# "실적 호재면 적극 매수" 같은 규칙은 기사 한 건으로 발동한다. 그래서 문턱이 높다.
+# 실측: 0.3 이면 첫 바퀴에 약한 기사들로 5종목을 한꺼번에 샀다.
+BUY_RULE_SENTIMENT = 0.5
+BUY_RULE_CONFIDENCE = 0.6
+RULE_THRESHOLD_FACTOR = 0.5
 # 가격 모델 확률을 점수로 바꾸는 배율. 0.6 → +0.4점
 MODEL_SCALE = 4.0
 
@@ -217,10 +221,17 @@ def news_step(
                 continue
             score, parts = scores.get(t, (0.0, []))
             fresh_pos = [p for p in parts if p.value > 0 and p.item.item_id not in acted]
+            fresh_pos.sort(key=lambda p: p.value, reverse=True)
             rule_buy = [
                 p for p in fresh_pos
-                if style.reactions.get(p.item.category) == "buy" and p.item.sentiment >= BUY_RULE_SENTIMENT
+                if style.reactions.get(p.item.category) == "buy"
+                and p.item.sentiment >= BUY_RULE_SENTIMENT
+                and p.item.confidence >= BUY_RULE_CONFIDENCE
             ]
+            if score < thr * RULE_THRESHOLD_FACTOR:
+                # "적극 매수" 는 기준을 절반으로 낮출 뿐, 무시하지는 않는다. 실측: 호재·악재가
+                # 섞여 점수 +0.16 인 종목까지 사서 첫 바퀴에 5종목을 한꺼번에 담았다.
+                rule_buy = []
             model_part = 0.0
             if model_fn is not None and (fresh_pos or t in style.focus_tickers):
                 try:
