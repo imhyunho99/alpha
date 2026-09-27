@@ -46,8 +46,10 @@ def start(username: str, portfolio: str) -> None:
     global _thread
     with _lock:
         _active.add((username, portfolio))
+        # 정지 직후 다시 시작하면 아직 살아 있는 스레드가 곧 _stop 을 보고 빠져나간다.
+        # 신호를 항상 지워, 살아 있는 스레드가 그대로 이어서 돌게 한다.
+        _stop.clear()
         if _thread is None or not _thread.is_alive():
-            _stop.clear()
             _thread = threading.Thread(target=_loop, daemon=True, name="newsdesk")
             _thread.start()
     print(f"[newsdesk {username}/{portfolio}] 뉴스 루프 등록 (주기 {INTERVAL_SEC}초)", flush=True)

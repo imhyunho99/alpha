@@ -426,3 +426,21 @@ def test_rule_buy_halves_threshold_but_does_not_bypass_it():
     acct2 = PaperAccount(cash=10_000_000)
     _run(acct2, [_interp("A", 0.8, hours_ago=0, title="beat")], {"A": 1e5}, style=style)  # 0.8 ≥ 0.5
     assert "A" in acct2.positions
+
+
+def test_restart_right_after_stop_keeps_loop_alive(monkeypatch):
+    import threading
+
+    from alpha_server.newsdesk import runner
+
+    gate = threading.Event()
+    monkeypatch.setattr(runner, "cycle", lambda: gate.wait(2) or {})
+    monkeypatch.setattr(runner, "_active", set())
+    monkeypatch.setattr(runner, "_thread", None)
+    runner.start("kim", "n1")
+    runner.stop("kim", "n1")        # 스레드는 cycle 안에서 대기 중
+    runner.start("kim", "n1")       # 곧바로 재시작
+    gate.set()
+    runner._thread.join(0.5)
+    assert runner._thread.is_alive()
+    runner.stop()
