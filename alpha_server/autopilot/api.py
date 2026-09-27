@@ -29,6 +29,7 @@ class ConfigPayload(BaseModel):
     active: bool
     horizon: str = "medium"
     portfolio: str = Field(default="default", pattern=PORTFOLIO_PATTERN)
+    mode: str = Field(default="model", pattern=r"^(model|news)$")
 
 
 class BacktestPayload(BaseModel):
@@ -95,6 +96,7 @@ def list_portfolios(user: UserPublic = Depends(require_user)):
             "portfolio": name,
             "temperature": cfg["temperature"],
             "active": cfg["active"],
+            "mode": cfg.get("mode", "model"),
             "capital": cfg.get("capital", 0.0),
             "equity": round(equity, 2),
             "return_pct": round((equity - initial) / initial * 100.0, 2),

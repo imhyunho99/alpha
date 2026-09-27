@@ -33,21 +33,19 @@ def _exit_reason(profile: RiskProfile, avg_price: float, price: float) -> str | 
     return None
 
 
-def step(
+def guard(
     account: PaperAccount,
     profile: RiskProfile,
-    tickers: list[str],
-    prices,
-    clock,
+    snapshot: dict[str, float],
     journal: Journal,
-    prob_fn,
-    score_fn,
-    horizon: str,
-    last_rebalance: datetime | None,
-) -> StepResult:
-    at = clock.now()
+    at: datetime,
+) -> tuple[StepResult | None, list[Fill]]:
+    """모든 모드가 매매 판단 전에 거치는 안전 장치. (조기 종료 결과, 체결) 을 돌려준다.
+
+    모델 모드(step)와 뉴스 모드(newsdesk.engine)가 같은 함수를 부른다. 한쪽만
+    고치는 일이 없도록 가드는 여기 한 곳에만 둔다.
+    """
     held = list(account.positions)
-    snapshot = prices.get_many(sorted(set(tickers) | set(held)), at)
     fills: list[Fill] = []
 
     # 0) 보유 종목의 가격이 하나라도 없으면 아무것도 하지 않는다.
@@ -65,13 +63,13 @@ def step(
         return StepResult(
             at, account.equity(snapshot), fills,
             skipped=f"가격 누락 {len(missing)}/{len(held)}종목",
-        )
+        ), fills
 
     # 1) 청산 — 다른 무엇보다 먼저
     if account.is_liquidatable(snapshot):
         liquidation_fills = account.liquidate_all(snapshot)
         journal.record("liquidation", at=at, count=len(liquidation_fills))
-        return StepResult(at, account.equity(snapshot), liquidation_fills, liquidated=True)
+        return StepResult(at, account.equity(snapshot), liquidation_fills, liquidated=True), fills
 
     # 2) 손절 / 익절
     for ticker in held:
@@ -84,6 +82,27 @@ def step(
             if fill:
                 fills.append(fill)
                 journal.record("exit", at=at, ticker=ticker, reason=reason, quantity=fill.quantity)
+
+    return None, fills
+
+
+def step(
+    account: PaperAccount,
+    profile: RiskProfile,
+    tickers: list[str],
+    prices,
+    clock,
+    journal: Journal,
+    prob_fn,
+    score_fn,
+    horizon: str,
+    last_rebalance: datetime | None,
+) -> StepResult:
+    at = clock.now()
+    snapshot = prices.get_many(sorted(set(tickers) | set(account.positions)), at)
+    early, fills = guard(account, profile, snapshot, journal, at)
+    if early is not None:
+        return early
 
     # 3) 리밸런싱 주기
     if last_rebalance is not None:

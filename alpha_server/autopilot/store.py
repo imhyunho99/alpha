@@ -14,7 +14,10 @@ from .account import PaperAccount, Position
 STATE_DIR = os.path.expanduser("~/AlphaModels/autopilot")
 
 DEFAULT_PORTFOLIO = "default"
-DEFAULT_CONFIG = {"temperature": 5, "capital": 0.0, "active": False, "horizon": "medium"}
+# mode: "model"(가격 모델로 배분) | "news"(뉴스 데스크가 굴림)
+DEFAULT_CONFIG = {
+    "temperature": 5, "capital": 0.0, "active": False, "horizon": "medium", "mode": "model",
+}
 
 _SUFFIXES = ("config", "account")
 
