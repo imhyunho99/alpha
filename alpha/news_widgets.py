@@ -114,6 +114,10 @@ def _fill(table: QTableWidget, rows: list[list[str]]) -> None:
             table.setItem(r, c, QTableWidgetItem(text))
 
 
+PORTFOLIO_RETRY_MAX = 5
+PORTFOLIO_RETRY_MS = 4000
+
+
 class NewsTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -121,6 +125,7 @@ class NewsTab(QWidget):
         self._workers: list[_Worker] = []
         self._syncing_portfolios = False
         self._pending_selection: str | None = None
+        self._portfolio_retries = 0
         self._pending_new: str | None = None
         self._news_urls: list[str] = []
         self._build()
@@ -220,7 +225,7 @@ class NewsTab(QWidget):
         status.addLayout(tables)
 
         refresh = QPushButton("새로고침")
-        refresh.clicked.connect(self._refresh_state)
+        refresh.clicked.connect(self._on_refresh_clicked)
         status.addWidget(refresh)
         layout.addWidget(status_box, 1)
 
@@ -250,6 +255,10 @@ class NewsTab(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         self.refresh_timer.start()
+        if self.portfolio_combo.count() == 0:
+            # 앱 시작 때 목록을 못 받았으면 탭을 열 때 다시 받는다
+            self._portfolio_retries = 0
+            self._load_portfolios()
         self._refresh_state()
 
     def hideEvent(self, event):
@@ -271,13 +280,30 @@ class NewsTab(QWidget):
     def known_portfolios(self) -> list[str]:
         return [self.portfolio_combo.itemData(i) for i in range(self.portfolio_combo.count())]
 
+    def _retry_portfolios(self):
+        self._load_portfolios(select=self._pending_selection)
+
     def _load_portfolios(self, select: str | None = None):
         self._pending_selection = select
         self._run(core.autopilot_portfolios, self._on_portfolios)
 
     def _on_portfolios(self, result):
         if not isinstance(result, dict) or "error" in result:
-            return  # 서버가 없으면 지금 보이는 것을 유지한다
+            # 앱을 켜는 순간 탭들이 한꺼번에 서버를 두드려(자동 운용 탭의 3년 백테스트 포함)
+            # 이 요청이 10초 제한에 걸린다. 한 번 실패로 끝내면 이미 있는 계좌가 영영
+            # 안 보인다(실측 E2E). 몇 번 더 시도하고, 그동안 무슨 일인지 보여준다.
+            if self._portfolio_retries < PORTFOLIO_RETRY_MAX:
+                self._portfolio_retries += 1
+                if self.portfolio_combo.count() == 0:
+                    self.summary_label.setText(
+                        f"서버 응답을 기다리는 중 — 포트폴리오 목록을 다시 불러옵니다 "
+                        f"({self._portfolio_retries}/{PORTFOLIO_RETRY_MAX})"
+                    )
+                QTimer.singleShot(PORTFOLIO_RETRY_MS, self._retry_portfolios)
+            elif self.portfolio_combo.count() == 0:
+                self.summary_label.setText("포트폴리오 목록을 불러오지 못했습니다. [새로고침]을 눌러 다시 시도하세요.")
+            return  # 지금 보이는 것은 유지한다
+        self._portfolio_retries = 0
         entries = news_portfolios(result.get("portfolios"))
         wanted = self._pending_selection or self.current_portfolio()
         self._pending_selection = None
@@ -422,6 +448,12 @@ class NewsTab(QWidget):
         self._show_notes(profile)
 
     # --- 상태 ---
+
+    def _on_refresh_clicked(self):
+        if self.portfolio_combo.count() == 0:
+            self._portfolio_retries = 0
+            self._load_portfolios()
+        self._refresh_state()
 
     def _refresh_state(self, *_args):
         portfolio = self.current_portfolio()

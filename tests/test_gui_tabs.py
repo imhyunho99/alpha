@@ -1,6 +1,6 @@
 """메인 윈도우 탭 구성 테스트.
 
-Task 14 Step 1: 분석 / 자동 운용(AutopilotTab) / 전략(StrategyChatTab) 3탭.
+분석 / 자동 운용(AutopilotTab) / 뉴스 자동매매(NewsTab) / 전략(StrategyChatTab) 4탭.
 기존 메서드·메뉴·상태바가 살아 있는지 함께 지킨다.
 """
 from __future__ import annotations
@@ -103,10 +103,11 @@ def test_central_widget_is_a_tab_widget(window):
 
 def test_has_analysis_autopilot_and_strategy_tabs(window):
     titles = _tab_titles(window)
-    assert window.tabs.count() == 3
+    assert window.tabs.count() == 4
     assert any("분석" in t for t in titles), titles
     assert any("자동 운용" in t for t in titles), titles
     assert any("전략" in t for t in titles), titles
+    assert any("뉴스" in t for t in titles), titles
 
 
 def test_autopilot_tab_is_present_and_typed(window):
@@ -170,4 +171,4 @@ def test_analysis_controls_still_reachable(window):
 
 def test_window_builds_without_server(window):
     assert window.windowTitle().startswith("Alpha")
-    assert window.tabs.count() == 3
+    assert window.tabs.count() == 4

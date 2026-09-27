@@ -449,3 +449,36 @@ def test_main_window_registers_news_tab():
 
     src = inspect.getsource(gui)
     assert "NewsTab" in src and "뉴스 자동매매" in src
+
+
+
+def test_portfolio_list_retries_when_server_is_busy(qapp, offline, monkeypatch):
+    # 앱 시작 때 탭들이 몰려 목록 요청이 시간 초과되면, 기존 계좌가 영영 안 보이던 결함(E2E)
+    scheduled = []
+    monkeypatch.setattr(news_widgets.QTimer, "singleShot", staticmethod(lambda ms, fn: scheduled.append(fn)))
+    tab = news_widgets.NewsTab()
+    _drain(tab)
+    scheduled.clear()
+    tab._portfolio_retries = 0   # 생성 시 첫 시도가 이미 한 번 실패했다
+    tab._on_portfolios({"error": "timeout"})
+    assert scheduled and "다시 불러옵니다" in tab.summary_label.text()
+    for _ in range(news_widgets.PORTFOLIO_RETRY_MAX + 2):
+        tab._on_portfolios({"error": "timeout"})
+    assert len(scheduled) == news_widgets.PORTFOLIO_RETRY_MAX
+    assert "새로고침" in tab.summary_label.text()
+    tab._on_portfolios({"portfolios": [{"portfolio": "news", "mode": "news"}]})
+    assert tab.known_portfolios() == ["news"]
+    assert tab._portfolio_retries == 0
+    tab.deleteLater()
+
+
+def test_refresh_button_reloads_empty_portfolio_list(qapp, offline, monkeypatch):
+    calls = []
+    monkeypatch.setattr(core, "autopilot_portfolios", lambda: calls.append(1) or {"portfolios": []})
+    tab = news_widgets.NewsTab()
+    _drain(tab)
+    calls.clear()
+    tab._on_refresh_clicked()
+    _drain(tab)
+    assert calls
+    tab.deleteLater()

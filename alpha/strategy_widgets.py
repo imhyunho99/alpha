@@ -303,6 +303,11 @@ class StrategyChatTab(QWidget):
         self._refresh()
 
     def _refresh(self):
+        # 앱을 처음 열면 로그인 창보다 이 탭이 먼저 만들어진다. 로그인 전 조회 실패를
+        # 오류 팝업으로 띄우면 새 사용자가 첫 화면에서 "실패"부터 본다. 조용히 비운다.
+        if not core.is_logged_in():
+            self.table.setRowCount(0)
+            return
         result = core._handle_request("get", "/strategies")
         if not isinstance(result, dict) or "error" in result:
             QMessageBox.warning(
