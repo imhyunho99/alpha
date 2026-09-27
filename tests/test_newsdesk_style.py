@@ -207,3 +207,55 @@ def test_drawdown(text, hard):
 ])
 def test_position_cap_variants(text, pct):
     assert parse_style(text).max_position_pct == pct
+
+
+# ── 나열된 회피 대상 ────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("text", ["테슬라, 애플은 빼고", "테슬라랑 애플 빼고", "avoid TSLA and AAPL"])
+def test_avoid_covers_the_whole_list(text):
+    p = parse_style(text)
+    assert set(p.avoid_tickers) == {"TSLA", "AAPL"}
+    assert p.focus_tickers == []
+
+
+def test_avoid_list_of_sectors():
+    p = parse_style("반도체, 바이오는 제외")
+    assert p.focus_sectors == []
+    assert "NVDA" in p.avoid_tickers and "LLY" in p.avoid_tickers
+
+
+def test_avoid_list_stops_at_focus_phrase():
+    p = parse_style("AI 위주로 테슬라, 애플은 빼고")
+    assert p.focus_sectors == ["ai"]
+    assert set(p.avoid_tickers) == {"TSLA", "AAPL"}
+    assert "MSFT" in p.focus_tickers
+
+
+# ── 부정형 ─────────────────────────────────────────────────────────────
+
+NEGATION_NOTE = "부정형이라 반응 규칙으로 쓰지 않음"
+
+
+@pytest.mark.parametrize("text", [
+    "규제 뉴스 나와도 매도하지 마",
+    "소송 뉴스엔 팔지 마",
+    "don't sell on lawsuits",
+])
+def test_negated_sell_is_not_a_reaction(text):
+    p = parse_style(text)
+    assert p.reactions == {}
+    assert any(NEGATION_NOTE in n for n in p.notes)
+    assert p.notes != ["인식한 규칙이 없어 기본 설정을 씁니다."]
+
+
+def test_negation_only_cancels_its_own_rule():
+    p = parse_style("실적은 사고 규제는 팔지 마")
+    assert p.reactions == {"earnings": "buy"}
+    assert any(n.startswith("규제") and NEGATION_NOTE in n for n in p.notes)
+
+
+def test_dont_buy_on_a_ticker_is_avoid_not_negation_note():
+    p = parse_style("테슬라는 사지 마")
+    assert p.avoid_tickers == ["TSLA"]
+    assert not any(NEGATION_NOTE in n for n in p.notes)
