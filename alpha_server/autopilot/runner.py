@@ -283,8 +283,14 @@ def _fd_note() -> str:
 
 def _live_once(username: str, portfolio: str = "default") -> None:
     """해당 포트폴리오 계좌 하나를 한 스텝 굴린다. 다른 계좌는 건드리지 않는다."""
+    # 뉴스 루프와 같은 잠금 — 모드 전환 순간 두 엔진이 같은 계좌를 덮어쓰지 않게.
+    with store.portfolio_lock(username, portfolio):
+        _live_once_locked(username, portfolio)
+
+
+def _live_once_locked(username: str, portfolio: str) -> None:
     cfg = store.load_config(username, portfolio)
-    if not cfg.get("active"):
+    if not cfg.get("active") or cfg.get("mode") == "news":
         return
 
     # 꺼져 있던 구간을 먼저 따라잡는다. 그 다음에야 현재 시점을 본다.
@@ -361,6 +367,14 @@ def live_keys() -> list[LiveKey]:
 
 def start_live(username: str, portfolio: str = "default") -> None:
     """해당 포트폴리오의 실시간 루프를 띄운다. 이미 돌고 있으면 아무것도 안 한다."""
+    # 뉴스 모드 포트폴리오는 뉴스 루프가 굴린다. 여기서 모델 루프를 띄우면
+    # 같은 계좌를 두 엔진이 번갈아 매매한다.
+    if store.load_config(username, portfolio).get("mode") == "news":
+        from ..newsdesk import runner as news_runner
+
+        news_runner.start(username, portfolio)
+        return
+
     key = (username, portfolio)
     with _live_lock:
         existing = _live_threads.get(key)
@@ -377,6 +391,9 @@ def stop_live(username: str | None = None, portfolio: str | None = None) -> None
 
     인자 없이 부르면 전부, username만 주면 그 사용자 전부, 둘 다 주면 하나만.
     """
+    from ..newsdesk import runner as news_runner
+
+    news_runner.stop(username, portfolio)
     with _live_lock:
         targets = [
             key for key in _live_threads

@@ -248,7 +248,12 @@ class AutopilotTab(QWidget):
         if isinstance(result, dict) and "error" not in result:
             raw = result.get("portfolios")
             if isinstance(raw, list):
-                entries = [e for e in raw if isinstance(e, dict) and e.get("portfolio")]
+                # 뉴스 포트폴리오는 뉴스 탭에서만 다룬다. 여기서 시작/정지하면
+                # 온도·자본금 화면이 모드를 모른 채 설정을 덮어쓴다.
+                entries = [
+                    e for e in raw
+                    if isinstance(e, dict) and e.get("portfolio") and e.get("mode", "model") != "news"
+                ]
 
         wanted = getattr(self, "_pending_selection", None) or self.current_portfolio()
         self._pending_selection = None

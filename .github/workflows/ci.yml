@@ -34,7 +34,7 @@ jobs:
         env:
           ALPHA_JWT_SECRET: test-secret-do-not-use-in-prod
         run: |
-          pytest tests/test_unit.py -q
+          pytest tests/test_unit.py tests/test_newsdesk_engine.py tests/test_newsdesk_sources.py tests/test_newsdesk_interpret.py tests/test_newsdesk_style.py tests/test_newsdesk_weights.py tests/test_newsdesk_backtest.py -q
 
   docker-build:
     runs-on: ubuntu-latest

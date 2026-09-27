@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from datetime import datetime
 
 from .account import PaperAccount, Position
@@ -14,7 +15,10 @@ from .account import PaperAccount, Position
 STATE_DIR = os.path.expanduser("~/AlphaModels/autopilot")
 
 DEFAULT_PORTFOLIO = "default"
-DEFAULT_CONFIG = {"temperature": 5, "capital": 0.0, "active": False, "horizon": "medium"}
+# mode: "model"(가격 모델로 배분) | "news"(뉴스 데스크가 굴림)
+DEFAULT_CONFIG = {
+    "temperature": 5, "capital": 0.0, "active": False, "horizon": "medium", "mode": "model",
+}
 
 _SUFFIXES = ("config", "account")
 
@@ -65,6 +69,21 @@ def list_portfolios(username: str) -> list[str]:
                 continue
             found.add(portfolio if sep else DEFAULT_PORTFOLIO)
     return sorted(found)
+
+
+_portfolio_locks: dict[tuple[str, str], threading.Lock] = {}
+_portfolio_locks_guard = threading.Lock()
+
+
+def portfolio_lock(username: str, portfolio: str = DEFAULT_PORTFOLIO) -> threading.Lock:
+    """계좌 하나를 읽고-판단하고-저장하는 동안 잡는 잠금.
+
+    모드를 바꾸는 순간 모델 루프와 뉴스 루프가 같은 계좌를 동시에 굴릴 수 있다.
+    둘 다 load → step → save 라서 늦게 저장한 쪽이 먼저 쪽의 체결을 지운다.
+    """
+    key = (_sanitize(username), _safe_portfolio(portfolio))
+    with _portfolio_locks_guard:
+        return _portfolio_locks.setdefault(key, threading.Lock())
 
 
 def load_config(username: str, portfolio: str = DEFAULT_PORTFOLIO) -> dict:
