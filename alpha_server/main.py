@@ -77,6 +77,10 @@ from .autopilot.api import router as autopilot_router  # noqa: E402
 
 app.include_router(autopilot_router)
 
+from .newsdesk.api import router as newsdesk_router  # noqa: E402
+
+app.include_router(newsdesk_router)
+
 
 # --- 인증 엔드포인트 ---
 @app.get("/auth/bootstrap", summary="첫 사용자 생성이 필요한지 확인 (인증 불필요)")

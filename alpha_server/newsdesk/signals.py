@@ -60,7 +60,10 @@ def news_score(
 ) -> tuple[float, list[Contribution]]:
     """(점수, 기여도 큰 순 기사들). 점수는 [-3, 3]."""
     parts = contributions(ticker, interps, weights, style, now)
-    score = sum(p.value for p in parts)
+    # 기사 수의 제곱근으로 나눈다. 대형주는 같은 사건을 수십 개 매체가 받아써서
+    # 단순 합이면 "많이 보도됐다"만으로 상한을 찍는다. 한 건짜리 강한 기사와
+    # 비슷한 기사 열 건이 비슷한 무게가 되도록.
+    score = sum(p.value for p in parts) / max(1.0, len(parts) ** 0.5)
     score = max(-SCORE_CAP, min(SCORE_CAP, score))
     parts.sort(key=lambda p: abs(p.value), reverse=True)
     return score, parts
