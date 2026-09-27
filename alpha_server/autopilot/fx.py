@@ -5,11 +5,20 @@ prices 계층에서 적용한다.
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime
 
 FALLBACK_USD_KRW = 1350.0
 
+# "latest" 는 상주 서버에서 몇 주씩 재사용된다. 날짜 키와 달리 만료가 필요하다.
+LATEST_TTL_SEC = 3600.0
+
 _rate_cache: dict[str, float] = {}
+_latest: tuple[float, float] | None = None   # (조회 시각, 환율)
+
+
+def _now() -> float:
+    return time.monotonic()
 
 
 def native_currency(ticker: str) -> str:
@@ -26,7 +35,9 @@ def to_krw(amount: float, currency: str, rate: float) -> float:
 
 
 def clear_cache() -> None:
+    global _latest
     _rate_cache.clear()
+    _latest = None
 
 
 def _fetch_usd_krw(at: datetime | None) -> float:
@@ -48,8 +59,11 @@ def usd_krw_rate(at: datetime | None = None) -> float:
     """USD→KRW 환율 단일값. 조회 실패 시 FALLBACK_USD_KRW로 폴백한다.
 
     날짜 단위로 캐시한다 — 백테스트에서 같은 날을 반복 조회하기 때문이다.
+    at=None(최신)은 LATEST_TTL_SEC 동안만 캐시하고, 폴백값은 캐시하지 않는다.
     """
-    key = at.strftime("%Y-%m-%d") if at else "latest"
+    if at is None:
+        return _latest_rate()
+    key = at.strftime("%Y-%m-%d")
     if key in _rate_cache:
         return _rate_cache[key]
     try:
@@ -57,6 +71,20 @@ def usd_krw_rate(at: datetime | None = None) -> float:
     except Exception:
         rate = FALLBACK_USD_KRW
     _rate_cache[key] = rate
+    return rate
+
+
+def _latest_rate() -> float:
+    global _latest
+    now = _now()
+    if _latest is not None and now - _latest[0] < LATEST_TTL_SEC:
+        return _latest[1]
+    try:
+        rate = _fetch_usd_krw(None)
+    except Exception:
+        # 만료된 실측값이라도 고정 폴백보다는 가깝다. 다음 호출에서 다시 조회한다.
+        return _latest[1] if _latest is not None else FALLBACK_USD_KRW
+    _latest = (now, rate)
     return rate
 
 
