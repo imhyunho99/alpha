@@ -166,7 +166,7 @@ class NewsTab(QWidget):
         style_layout.addLayout(buttons)
         style_layout.addWidget(QLabel("이렇게 이해했습니다"))
         self.notes_list = QListWidget()
-        self.notes_list.setFixedHeight(90)
+        self.notes_list.setFixedHeight(130)
         style_layout.addWidget(self.notes_list)
         layout.addWidget(style_box)
 
@@ -444,10 +444,14 @@ class NewsTab(QWidget):
         )
 
         trust = state.get("trust") if isinstance(state.get("trust"), dict) else {}
-        _fill(self.trust_table, [
+        trust_rows = [
             [signal_label(k), f"{_num(w, 1.0):.2f}", trust_mark(_num(w, 1.0))]
             for k, w in sorted(trust.items(), key=lambda kv: -_num(kv[1], 1.0))
-        ])
+        ]
+        if not trust_rows:
+            # 첫 채점은 매매 72시간 뒤다. 그때까지 빈 표는 고장처럼 보인다.
+            trust_rows = [["아직 없음", "1.00", "매매 후 72시간이 지나면 실제 결과로 채점됩니다"]]
+        _fill(self.trust_table, trust_rows)
 
         _fill(self.holdings_table, [
             [
