@@ -539,32 +539,9 @@ def _core_satellite(account, profile, style, weights, snapshot, at, journal, dec
                                        hit_items, consumed=[p.item for p in parts]))
         acted.update(acted_key(p.item) for p in parts)
 
-    # 2) 비중 조정 — 손실 브레이크, 종목 손실, 위성 기간 끝, 관심 종목에서 빠짐
-    for t in list(account.positions):
-        price = snapshot.get(t)
-        if price is None:
-            continue
-        goal = target(t, price)
-        current = account.positions[t].quantity * price
-        excess = current - goal
-        if excess <= max(goal * TOLERANCE, MIN_TRADE_KRW):
-            continue
-        fill = account.sell(t, excess / price, price)
-        if not fill:
-            continue
-        fills.append(fill)
-        journal.record("news_rebalance", at=at, ticker=t)
-        why = []
-        if t not in core_set and t not in tilts:
-            why.append("관심 종목 아님 · 뉴스 매수 기간 끝")
-        if exposure < 1.0:
-            why.append(f"손실 브레이크(고점 대비 -{drawdown:.1f}% → 투자 비중 {exposure * 100:.0f}%)")
-        pnl = _pnl_pct(account, t, price)
-        if params.loss_weights and pnl < 0:
-            why.append(f"종목 손실 {pnl:+.1f}% → 비중 {W.ticker_multiplier(pnl):.2f}배")
-        decisions.append(_decision(at, "trim", t, " · ".join(why) or "목표 비중 초과", fill.gross))
-
-    # 3) 뉴스 매수(위성) — 기존 뉴스 매매와 같은 판단, 위성 한 칸만큼
+    # 2) 뉴스 매수(위성) — 기존 뉴스 매매와 같은 판단, 위성 한 칸만큼.
+    #    비중 조정보다 먼저 한다. 실측(10/1 첫 실행): 조정이 먼저 돌아 MU 를 33만원 판 뒤
+    #    같은 스텝에서 호재로 35만원 다시 샀다.
     budget = max(0, style.max_daily_buys - buys_today)
     open_slots = SATELLITE_SLOTS - sum(1 for v in tilts.values() if v["dir"] > 0 and at < v["until"])
     if budget > 0 and open_slots > 0 and sat_slot >= MIN_TRADE_KRW:
@@ -633,6 +610,31 @@ def _core_satellite(account, profile, style, weights, snapshot, at, journal, dec
                 reason += f" · 뉴스 몫 {params.lock_days:g}일 보유"
             decisions.append(_decision(at, "buy", t, reason, gap, [p.item for p in parts[:3]],
                                        consumed=[p.item for p in all_parts]))
+
+    # 3) 비중 조정 — 손실 브레이크, 종목 손실, 위성 기간 끝, 관심 종목에서 빠짐
+    for t in list(account.positions):
+        price = snapshot.get(t)
+        if price is None:
+            continue
+        goal = target(t, price)
+        current = account.positions[t].quantity * price
+        excess = current - goal
+        if excess <= max(goal * TOLERANCE, MIN_TRADE_KRW):
+            continue
+        fill = account.sell(t, excess / price, price)
+        if not fill:
+            continue
+        fills.append(fill)
+        journal.record("news_rebalance", at=at, ticker=t)
+        why = []
+        if t not in core_set and t not in tilts:
+            why.append("관심 종목 아님 · 뉴스 매수 기간 끝")
+        if exposure < 1.0:
+            why.append(f"손실 브레이크(고점 대비 -{drawdown:.1f}% → 투자 비중 {exposure * 100:.0f}%)")
+        pnl = _pnl_pct(account, t, price)
+        if params.loss_weights and pnl < 0:
+            why.append(f"종목 손실 {pnl:+.1f}% → 비중 {W.ticker_multiplier(pnl):.2f}배")
+        decisions.append(_decision(at, "trim", t, " · ".join(why) or "목표 비중 초과", fill.gross))
 
     # 4) 코어 채우기 — 뉴스가 방아쇠가 아니다. 하루 매수 한도(뉴스 매수용)를 쓰지 않는다.
     for t in core:

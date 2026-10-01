@@ -251,3 +251,14 @@ def test_live_loop_uses_core_satellite_and_persists_locks(tmp_path, monkeypatch)
     assert "A" not in account.positions      # 규제 악재 → 잠금
     assert store.load_tilts("u", "p")["A"]["dir"] == -1
     assert ap.load_equity("u", "p")
+
+
+def test_good_news_on_overweight_holding_does_not_sell_then_rebuy():
+    """10/1 실측: 목표 초과로 판 종목을 같은 스텝에서 호재로 다시 샀다."""
+    book = Book()
+    book.step()
+    core_slot, sat_slot = _slots(book)
+    book.account.buy("A", core_slot + sat_slot * 1.5, 100.0, PRICES, 1.0)   # v3.4.0 시절 큰 보유
+    r = book.step([_interp("A", 0.9)])
+    a = [d["action"] for d in r.decisions if d["ticker"] == "A"]
+    assert not ("trim" in a and "buy" in a)
