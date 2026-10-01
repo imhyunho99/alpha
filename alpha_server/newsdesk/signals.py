@@ -30,10 +30,16 @@ class NewsParams:
     max_age_hours: float = MAX_AGE_HOURS
     novelty_filter: bool = False     # 최근 며칠 안에 비슷한 제목이 있던 기사는 점수에서 뺀다
     earnings_buys: bool = True       # 실적 호재로 매수할지
-    policy: str = "active"           # "active": 뉴스로 사고팖 / "defensive": 기본 보유 + 악재 이탈
+    # "active": 뉴스로 사고팖 / "defensive": 기본 보유 + 악재 이탈
+    # "core_satellite": 기본 보유(코어) + 뉴스 매매(위성) — engine._core_satellite
+    policy: str = "active"
     exit_days: float = 0.0           # defensive: 악재로 판 뒤 다시 담지 않는 기간
     core_exits: bool = True          # defensive: False 면 뉴스 이탈 없이 보유만(대조군)
     loss_weights: bool = True        # 종목 손실 배수·계좌 손실 브레이크를 쓸지
+    # core_satellite: 뉴스로 판 종목은 이 기간 다시 사지 않고, 뉴스로 산 몫은 이 기간이 지나면
+    # 코어 비중으로 돌아간다. 일간 뉴스의 예측력은 1~2일, 1주 안에 사라진다(Tetlock 2007,
+    # Heston & Sinha 2017). 4주 이탈은 2026-09 실험에서 상승장 수익을 깎았다.
+    lock_days: float = 7.0
     label: str = field(default="current", compare=False)
 
 
@@ -52,6 +58,30 @@ PARAMS_HOLD_STATIC = NewsParams(half_life_hours=72.0, max_age_hours=168.0, polic
                                 core_exits=False, loss_weights=False, label="hold_static")
 PARAMS_DEFENSIVE_STATIC = NewsParams(half_life_hours=72.0, max_age_hours=168.0, policy="defensive",
                                      exit_days=28.0, loss_weights=False, label="defensive_static")
+
+# 코어:위성 비율은 온도로 정한다(core_share). 기사 창은 v3.4.0 그대로 — 위성은 기존 뉴스 매매다.
+PARAMS_CORE_SATELLITE = NewsParams(policy="core_satellite", label="core_satellite")
+# 되돌림 차단의 값어치를 재는 대조군
+PARAMS_CORE_SATELLITE_NOLOCK = NewsParams(policy="core_satellite", lock_days=0.0,
+                                          label="core_satellite_nolock")
+
+# 실시간 루프가 쓰는 정책. 2026-10-01 판정(docs/NEWSDESK_CORE_SATELLITE.md)으로 current 에서 바꿨다.
+PARAMS_LIVE = PARAMS_CORE_SATELLITE
+
+
+def core_share(temperature: int, news_pct: float | None = None) -> float:
+    """기본 보유(코어)에 둘 몫. 나머지가 뉴스 매매(위성).
+
+    코어-위성 운용의 통상 구성은 70:30, 보수적이면 80:20, 공격적이면 60:40.
+    스타일에서 "뉴스 매매는 40%까지"처럼 정하면 그 값이 이긴다.
+    """
+    if news_pct is not None:
+        return 1.0 - min(100.0, max(0.0, news_pct)) / 100.0
+    if temperature <= 3:
+        return 0.8
+    if temperature <= 7:
+        return 0.7
+    return 0.6
 
 
 def signal_key(category: str) -> str:

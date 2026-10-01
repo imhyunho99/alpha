@@ -165,6 +165,11 @@ _DRAWDOWN = [
     re.compile(rf"(?:손실|낙폭|drawdown|losses?)\s*(?:이|가|of|over|above|exceeds)?\s*{_NUM}\s*%", re.I),
     re.compile(rf"{_NUM}\s*%\s*(?:손실|낙폭|drawdown|loss)", re.I),
 ]
+_NEWS_SHARE = [
+    re.compile(rf"뉴스\s*(?:매매|투자|트레이딩)?(?:는|은|에|로|비중)?\s*(?:최대\s*)?{_NUM}\s*%"),
+    re.compile(rf"{_NUM}\s*%\s*(?:for|on|to|in)\s*news(?:\s*trad(?:es|ing))?", re.I),
+    re.compile(rf"news\s*(?:trading|trades|sleeve)?\s*(?:at|of|up\s*to)?\s*{_NUM}\s*%", re.I),
+]
 
 _TICKER_CODE = re.compile(r"(?<![0-9])(\d{6})(?:\.(KS|KQ))?(?![0-9])", re.I)
 _TICKER_UPPER = re.compile(r"(?<![A-Za-z0-9.])([A-Z]{1,5})(?![A-Za-z0-9])")
@@ -430,6 +435,11 @@ def parse_style(text: str) -> StyleProfile:
         profile.drawdown_hard_pct = hard
         profile.drawdown_soft_pct = hard / 2
         notes.append(f"손실 한도: 고점 대비 {hard / 2:g}%부터 비중 축소, {hard:g}%에서 최저 비중")
+
+    share = _first_number(_NEWS_SHARE, text)
+    if share is not None:
+        profile.news_pct = min(100.0, max(0.0, share))
+        notes.append(f"뉴스 매매 몫: {profile.news_pct:g}% (나머지는 관심 종목 기본 보유)")
 
     profile.notes = notes or [_NO_RULES_NOTE]
     return profile

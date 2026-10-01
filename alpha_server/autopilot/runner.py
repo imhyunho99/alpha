@@ -320,6 +320,13 @@ def _live_once_locked(username: str, portfolio: str) -> None:
         last_rebalance = outcome.at
     store.save_account(username, account, last_rebalance, portfolio,
                        last_tracked_at=datetime.now(timezone.utc))
+    # 쿨다운으로 건너뛴 스텝도 평가액은 정확하다. 가격이 빠진 스텝만 버린다.
+    if outcome.skipped is None or outcome.skipped == "cooldown":
+        try:
+            store.record_equity(username, portfolio, outcome.at or datetime.now(timezone.utc),
+                                outcome.equity)
+        except Exception as exc:   # 기록 실패가 매매 루프를 멈추면 안 된다
+            print(f"[autopilot {username}/{portfolio}] 잔고 기록 실패: {exc}", flush=True)
 
     # 무인으로 한 달을 도는 루프다. 로그가 없으면 "돌았는데 살 게 없었다"와
     # "아예 안 돌았다"를 구분할 수 없다.

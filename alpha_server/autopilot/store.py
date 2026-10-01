@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from .account import PaperAccount, Position
 
@@ -158,6 +158,41 @@ def save_account(
     }
     with open(_path(username, "account", portfolio), "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+_KST = timezone(timedelta(hours=9))
+EQUITY_KEEP_DAYS = 800
+
+
+def record_equity(username: str, portfolio: str, at: datetime, equity: float) -> None:
+    """하루 한 줄(한국 날짜 기준, 그날 마지막 값). 계좌끼리 같은 기간으로 비교하려면 필요하다.
+
+    실측(2026-09-30): 이 기록이 없어 9/27 에 시작한 뉴스 계좌와 8/23 에 시작한 balanced
+    계좌를 같은 기간으로 비교할 수 없었다.
+    """
+    path = _path(username, "equity", portfolio)
+    try:
+        with open(path, encoding="utf-8") as f:
+            series = json.load(f)
+        if not isinstance(series, dict):
+            series = {}
+    except (OSError, json.JSONDecodeError):
+        series = {}
+    series[at.astimezone(_KST).date().isoformat()] = round(float(equity), 0)
+    keep = sorted(series)[-EQUITY_KEEP_DAYS:]
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({d: series[d] for d in keep}, f)
+    os.replace(tmp, path)
+
+
+def load_equity(username: str, portfolio: str = DEFAULT_PORTFOLIO) -> dict[str, float]:
+    try:
+        with open(_path(username, "equity", portfolio), encoding="utf-8") as f:
+            raw = json.load(f)
+        return raw if isinstance(raw, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 def list_users() -> list[str]:

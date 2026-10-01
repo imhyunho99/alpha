@@ -19,7 +19,9 @@ from ..autopilot.journal import Journal
 from ..autopilot.temperature import RiskProfile
 from . import weights as W
 from .models import Interpretation, StyleProfile
-from .signals import PARAMS_CURRENT, NewsParams, dominant_category, news_score, signal_key, threshold
+from .signals import (
+    PARAMS_CURRENT, NewsParams, core_share, dominant_category, news_score, signal_key, threshold,
+)
 
 # 목표와 이만큼 이상 차이 나야 거래한다. 3분마다 도는 루프라 좁으면 매매 비용만 쌓인다.
 TOLERANCE = 0.10
@@ -39,6 +41,12 @@ MODEL_SCALE = 4.0
 # "전략별 쿨다운" 게이트를 뉴스 모드에 적용한 것이다. 스타일 규칙 매도와 손절,
 # 손실 브레이크 축소는 사용자가 명시한 안전 동작이라 쿨다운을 받지 않는다.
 TICKER_COOLDOWN_HOURS = 6.0
+
+# core_satellite: 뉴스 매수 몫을 동시에 몇 종목까지 들고 있을지. 위성 예산을 이만큼 나눈다.
+# 스타일 기본 하루 매수 한도(5회)와 같게 둬, 하루치 호재로 위성이 다 차도록 했다.
+SATELLITE_SLOTS = 5
+# 악재 누적(규칙이 아닌 점수)으로 줄일 때 잠금 동안 남기는 코어 비중
+TRIM_KEEP = 0.5
 
 ModelFn = Callable[[str], "float | None"]   # ticker -> 상승 확률(0~1)
 
@@ -120,6 +128,7 @@ def news_step(
     last_action_at: dict[str, datetime] | None = None,
     params: NewsParams = PARAMS_CURRENT,
     benched: dict[str, datetime] | None = None,
+    tilts: dict[str, dict] | None = None,
 ) -> NewsStepResult:
     acted = set(acted_item_ids or ())
     # `benched or {}` 로 쓰면 빈 dict 를 받았을 때 새 dict 를 만들어, 여기서 기록한 이탈이
@@ -168,6 +177,14 @@ def news_step(
     scores: dict[str, tuple[float, list]] = {}
     for t in universe:
         scores[t] = news_score(t, interps, weights, style, at, params)
+
+    if params.policy == "core_satellite":
+        # benched 와 같은 이유로 `or {}` 를 쓰지 않는다 — 호출한 쪽이 결과를 저장한다.
+        if tilts is None:
+            tilts = {}
+        return _core_satellite(account, profile, style, weights, snapshot, at, journal, decisions,
+                               fills, scores, thr, exposure, drawdown, acted, tilts, buys_today,
+                               params, universe, watch, model_fn, last_action_at)
 
     if params.policy == "defensive":
         return _defensive(account, profile, style, weights, snapshot, at, journal, decisions, fills,
@@ -425,6 +442,216 @@ def _defensive(account, profile, style, weights, snapshot, at, journal, decision
         journal.record("news_core_buy", at=at, ticker=t, amount=gap)
         reason = "이탈 기간 끝 → 기본 보유 복귀" if until is not None else "기본 보유 편입"
         decisions.append(_decision(at, "buy", t, reason, gap))
+
+    return NewsStepResult(at, account.equity(snapshot), fills, decisions,
+                          exposure=exposure, drawdown_pct=drawdown)
+
+
+def _locked(tilts: dict[str, dict], ticker: str, direction: int, at: datetime) -> bool:
+    t = tilts.get(ticker)
+    return bool(t) and t["dir"] == direction and at < t["until"]
+
+
+def _core_satellite(account, profile, style, weights, snapshot, at, journal, decisions, fills,
+                    scores, thr, exposure, drawdown, acted, tilts, buys_today, params,
+                    universe, watch, model_fn, last_action_at) -> NewsStepResult:
+    """관심 종목을 나눠 들고(코어), 그 위에서 뉴스로 사고판다(위성).
+
+    근거(docs/NEWSDESK_RESEARCH.md): 2025-26·2022 두 기간 모두 뉴스 타이밍은 보유를 이기지
+    못했고, 값어치가 확인된 건 관심 종목 보유 + 손실 기반 가중치였다. 뉴스 매매 기능은
+    사용자가 원하는 제품이라 남기되, 자금의 일부(위성)로 제한한다.
+
+    종목 목표 = 코어 몫 + (뉴스 매수 잠금 중이면) 위성 한 칸, 뉴스 매도 잠금 중이면 코어도 줄인다.
+    잠금(tilts)이 되돌림 매매를 막는다. 실측(9/28): 규제 악재로 NVDA 를 팔고 6시간 뒤 실적
+    호재로 다시 샀다 — 쿨다운 6시간을 2분 넘겨서.
+    """
+    # lock_days=0 은 대조군: 잠금 대신 기존 종목 쿨다운(6시간)만 둔다
+    lock = timedelta(days=params.lock_days) if params.lock_days > 0 else timedelta(hours=TICKER_COOLDOWN_HOURS)
+    for t in [t for t, v in tilts.items() if at >= v["until"]]:
+        del tilts[t]
+
+    core = [t for t in (style.focus_tickers or watch) if t not in style.avoid_tickers and t in snapshot]
+    core_set = set(core)
+    equity = account.equity(snapshot)
+    deployable = equity * (100.0 - profile.cash_floor_pct) / 100.0 * profile.max_leverage * exposure
+    share = core_share(profile.temperature, style.news_pct)
+    cap_pct = min(style.max_position_pct, profile.max_position_pct) if style.max_position_pct else profile.max_position_pct
+    per_cap = equity * cap_pct / 100.0
+    core_slot = min(deployable * share / len(core), per_cap) if core else 0.0
+    sat_slot = deployable * (1.0 - share) / SATELLITE_SLOTS
+
+    def target(t: str, price: float) -> float:
+        base = core_slot if t in core_set else 0.0
+        tilt = tilts.get(t)
+        if tilt and tilt["dir"] > 0:
+            base += sat_slot
+        elif tilt and tilt["dir"] < 0:
+            base *= tilt["keep"]
+        held = account.positions.get(t)
+        if held and params.loss_weights:
+            base *= W.ticker_multiplier(_pnl_pct(account, t, price))
+        return min(base, per_cap)
+
+    # 1) 뉴스 매도 — 사용자 규칙("규제 뉴스면 정리")은 매수 잠금 중에도 따른다. 명시한 안전 동작이다.
+    # 아직 안 든 관심 종목도 본다. 안 그러면 악재가 뜬 종목을 바로 아래 코어 채우기가 사들인다.
+    for t in list(account.positions) + [c for c in core if c not in account.positions]:
+        price = snapshot.get(t)
+        if price is None:
+            continue
+        score, parts = scores.get(t, (0.0, []))
+        fresh = [p for p in parts if acted_key(p.item) not in acted]
+        rule_hits = [
+            p for p in fresh
+            if style.reactions.get(p.item.category) == "sell" and p.item.sentiment <= SELL_RULE_SENTIMENT
+        ]
+        negative = [p for p in fresh if p.value < 0]
+        if rule_hits:
+            keep, hit_items = 0.0, [rule_hits[0].item]
+            cat = rule_hits[0].item.category
+            why = f"스타일 규칙: {category_ko(cat)} 악재"
+        elif (score <= -thr and negative and not _cooling(last_action_at, t, at)
+              and not _locked(tilts, t, +1, at)):
+            # 점수만으로는 막 산 종목을 팔지 않는다 — 호재·악재가 섞인 종목에서 사고팔기를 반복한다
+            keep, hit_items = TRIM_KEEP, [p.item for p in negative[:3]]
+            cat = dominant_category(parts, -1)
+            why = f"악재 누적(점수 {score:+.2f}, 기준 -{thr:.2f})"
+        else:
+            continue
+        tilts[t] = {"dir": -1, "until": at + lock, "keep": keep}
+        lock_note = f"{params.lock_days:g}일간 다시 사지 않음" if params.lock_days > 0 else ""
+        if t not in account.positions:
+            acted.update(acted_key(p.item) for p in parts)
+            decisions.append(_decision(at, "hold_off", t, f"{why} → 사지 않음" + (f" · {lock_note}" if lock_note else ""),
+                                       0.0, hit_items, consumed=[p.item for p in parts]))
+            continue
+        goal = 0.0 if keep == 0 else target(t, price)
+        qty = account.positions[t].quantity - goal / price
+        fill = account.sell(t, qty, price) if qty > 0 else None
+        if fill:
+            fills.append(fill)
+            W.record_signal(weights, signal_key(cat), t, -1, price, at)
+            journal.record("news_sell", at=at, ticker=t, reason=cat)
+            action = "sell" if t not in account.positions else "trim"
+            why += " → 전량 정리" if action == "sell" else " → 비중 축소"
+            if lock_note:
+                why += f" · {lock_note}"
+            decisions.append(_decision(at, action, t, why, fill.gross,
+                                       hit_items, consumed=[p.item for p in parts]))
+        acted.update(acted_key(p.item) for p in parts)
+
+    # 2) 비중 조정 — 손실 브레이크, 종목 손실, 위성 기간 끝, 관심 종목에서 빠짐
+    for t in list(account.positions):
+        price = snapshot.get(t)
+        if price is None:
+            continue
+        goal = target(t, price)
+        current = account.positions[t].quantity * price
+        excess = current - goal
+        if excess <= max(goal * TOLERANCE, MIN_TRADE_KRW):
+            continue
+        fill = account.sell(t, excess / price, price)
+        if not fill:
+            continue
+        fills.append(fill)
+        journal.record("news_rebalance", at=at, ticker=t)
+        why = []
+        if t not in core_set and t not in tilts:
+            why.append("관심 종목 아님 · 뉴스 매수 기간 끝")
+        if exposure < 1.0:
+            why.append(f"손실 브레이크(고점 대비 -{drawdown:.1f}% → 투자 비중 {exposure * 100:.0f}%)")
+        pnl = _pnl_pct(account, t, price)
+        if params.loss_weights and pnl < 0:
+            why.append(f"종목 손실 {pnl:+.1f}% → 비중 {W.ticker_multiplier(pnl):.2f}배")
+        decisions.append(_decision(at, "trim", t, " · ".join(why) or "목표 비중 초과", fill.gross))
+
+    # 3) 뉴스 매수(위성) — 기존 뉴스 매매와 같은 판단, 위성 한 칸만큼
+    budget = max(0, style.max_daily_buys - buys_today)
+    open_slots = SATELLITE_SLOTS - sum(1 for v in tilts.values() if v["dir"] > 0 and at < v["until"])
+    if budget > 0 and open_slots > 0 and sat_slot >= MIN_TRADE_KRW:
+        ranked: list[tuple[float, str, list, float]] = []
+        for t in universe:
+            if t in style.avoid_tickers or snapshot.get(t) is None:
+                continue
+            if t in tilts:   # 이미 뉴스로 산 종목이거나, 뉴스로 판 뒤 잠금 중
+                continue
+            score, parts = scores.get(t, (0.0, []))
+            fresh_pos = [p for p in parts if p.value > 0 and acted_key(p.item) not in acted
+                         and (params.earnings_buys or p.item.category != "earnings")]
+            if not fresh_pos or _cooling(last_action_at, t, at):
+                continue
+            fresh_pos.sort(key=lambda p: p.value, reverse=True)
+            rule_buy = [
+                p for p in fresh_pos
+                if style.reactions.get(p.item.category) == "buy"
+                and p.item.sentiment >= BUY_RULE_SENTIMENT
+                and p.item.confidence >= BUY_RULE_CONFIDENCE
+            ] if score >= thr * RULE_THRESHOLD_FACTOR else []
+            model_part = 0.0
+            if model_fn is not None:
+                try:
+                    prob = model_fn(t)
+                except Exception:
+                    prob = None
+                if prob is not None:
+                    model_part = weights.trust_for("model") * (float(prob) - 0.5) * MODEL_SCALE
+            total = score + model_part
+            if total >= thr or rule_buy:
+                ranked.append((total, t, rule_buy or fresh_pos, model_part))
+        ranked.sort(reverse=True)
+
+        for total, t, parts, model_part in ranked:
+            if budget <= 0 or open_slots <= 0:
+                break
+            price = snapshot[t]
+            tilts[t] = {"dir": 1, "until": at + lock, "keep": 1.0}
+            goal = target(t, price)
+            held = account.positions.get(t)
+            gap = goal - (held.quantity * price if held else 0.0)
+            all_parts = scores.get(t, (0.0, []))[1]
+            acted.update(acted_key(p.item) for p in all_parts)
+            if gap <= max(goal * TOLERANCE, MIN_TRADE_KRW):
+                del tilts[t]   # 이미 상한까지 들고 있다
+                continue
+            fill = account.buy(t, gap, price, snapshot, profile.max_leverage)
+            if not fill:
+                del tilts[t]
+                continue
+            fills.append(fill)
+            budget -= 1
+            open_slots -= 1
+            cat = parts[0].item.category if parts else "other"
+            W.record_signal(weights, signal_key(cat), t, +1, price, at)
+            if model_part > 0:
+                W.record_signal(weights, "model", t, +1, price, at)
+            journal.record("news_buy", at=at, ticker=t, amount=gap, score=round(total, 2))
+            reason = f"{category_ko(cat)} 호재(점수 {total:+.2f}, 기준 {thr:.2f})"
+            if style.reactions.get(cat) == "buy":
+                reason = f"스타일 규칙: {category_ko(cat)} 호재 → 매수 (점수 {total:+.2f})"
+            if model_part:
+                reason += f" · 가격 모델 {model_part:+.2f}"
+            if params.lock_days > 0:
+                reason += f" · 뉴스 몫 {params.lock_days:g}일 보유"
+            decisions.append(_decision(at, "buy", t, reason, gap, [p.item for p in parts[:3]],
+                                       consumed=[p.item for p in all_parts]))
+
+    # 4) 코어 채우기 — 뉴스가 방아쇠가 아니다. 하루 매수 한도(뉴스 매수용)를 쓰지 않는다.
+    for t in core:
+        price = snapshot[t]
+        if _locked(tilts, t, -1, at):
+            continue
+        goal = target(t, price)
+        held = account.positions.get(t)
+        gap = goal - (held.quantity * price if held else 0.0)
+        if gap <= max(goal * TOLERANCE, MIN_TRADE_KRW):
+            continue
+        fill = account.buy(t, gap, price, snapshot, profile.max_leverage)
+        if not fill:
+            continue
+        fills.append(fill)
+        journal.record("news_core_buy", at=at, ticker=t, amount=gap)
+        d = _decision(at, "buy", t, "기본 보유 편입" if held is None else "기본 보유 비중 맞춤", gap)
+        d["sleeve"] = "core"
+        decisions.append(d)
 
     return NewsStepResult(at, account.equity(snapshot), fills, decisions,
                           exposure=exposure, drawdown_pct=drawdown)

@@ -19,7 +19,7 @@ from ..autopilot.journal import Journal
 from ..autopilot.temperature import profile_for
 from . import store
 from .engine import news_step
-from .signals import MAX_AGE_HOURS
+from .signals import MAX_AGE_HOURS, PARAMS_LIVE
 
 INTERVAL_SEC = int(os.getenv("ALPHA_NEWS_INTERVAL_SEC", "180"))
 WATCH_CAP = 60
@@ -190,6 +190,7 @@ def _run_portfolio_locked(user, portfolio, recent, prices, now, watch, model_fn)
     weights = store.load_weights(user, portfolio)
     past = store.load_decisions(user, portfolio, limit=store.DECISIONS_KEEP)
     acted = {i for d in past for i in d.get("item_ids", [])}
+    tilts = store.load_tilts(user, portfolio)
 
     own_watch = [t for t in watch if t in set(style.focus_tickers or DEFAULT_WATCH) | set(account.positions)]
     result = news_step(
@@ -200,11 +201,19 @@ def _run_portfolio_locked(user, portfolio, recent, prices, now, watch, model_fn)
         acted_item_ids=acted,
         model_fn=model_fn,
         last_action_at=store.last_news_actions(user, portfolio),
+        params=PARAMS_LIVE,
+        tilts=tilts,
     )
     if result.fills and result.skipped is None:
         last_rebalance = now
     ap_store.save_account(user, account, last_rebalance, portfolio, last_tracked_at=now)
     store.save_weights(user, portfolio, weights)
+    store.save_tilts(user, portfolio, tilts)
+    if result.skipped is None:
+        try:
+            ap_store.record_equity(user, portfolio, now, result.equity)
+        except Exception as exc:   # 기록 실패가 매매 루프를 멈추면 안 된다
+            print(f"[newsdesk {user}/{portfolio}] 잔고 기록 실패: {exc}", flush=True)
     store.append_decisions(user, portfolio, result.decisions)
 
     trades = [d for d in result.decisions if d["action"] in ("buy", "sell", "trim", "exit")]

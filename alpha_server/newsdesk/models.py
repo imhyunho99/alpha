@@ -108,6 +108,7 @@ class StyleProfile:
     max_daily_buys: int = 5
     drawdown_soft_pct: float = 5.0     # 고점 대비 이만큼 빠지면 비중을 줄이기 시작
     drawdown_hard_pct: float = 15.0    # 여기서 최저 비중까지 줄임
+    news_pct: float | None = None      # 뉴스 매매(위성)에 쓸 몫(%). None 이면 온도 값
     notes: list[str] = field(default_factory=list)  # 사람이 확인할 해석 요약
 
     def to_dict(self) -> dict:
