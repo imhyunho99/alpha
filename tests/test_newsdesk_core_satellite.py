@@ -262,3 +262,44 @@ def test_good_news_on_overweight_holding_does_not_sell_then_rebuy():
     r = book.step([_interp("A", 0.9)])
     a = [d["action"] for d in r.decisions if d["ticker"] == "A"]
     assert not ("trim" in a and "buy" in a)
+
+
+def test_whole_shares_for_korean_stocks():
+    from alpha_server.newsdesk.signals import PARAMS_CS_WHOLE
+
+    prices = {**PRICES, "000660.KS": 1_770_000.0, "005930.KS": 268_500.0}
+    style = _style(focus_tickers=list(FOCUS) + ["000660.KS", "005930.KS"])
+    book = Book(style=style)
+    book.step(prices=prices, params=PARAMS_CS_WHOLE)
+    assert "000660.KS" not in book.account.positions          # 1주가 종목 상한(7%)을 넘는다
+    assert book.account.positions["005930.KS"].quantity == 1  # 한 칸이 1주보다 조금 작아도 가장 가까운 1주
+    assert book.account.positions["A"].quantity != int(book.account.positions["A"].quantity)  # 미국은 소수 주
+
+
+def test_whole_shares_partial_sell_rounds_down():
+    from alpha_server.newsdesk import engine as E2
+    from alpha_server.newsdesk.signals import PARAMS_CS_WHOLE
+
+    acct = PaperAccount(cash=10_000_000.0)
+    acct.buy("005930.KS", 268_500 * 5.5, 268_500, {"005930.KS": 268_500}, 1.0)
+    held = acct.positions["005930.KS"].quantity
+    E2._sell(acct, "005930.KS", 2.7, 268_500, PARAMS_CS_WHOLE)
+    assert acct.positions["005930.KS"].quantity == pytest.approx(held - 2)
+    assert E2._sell(acct, "005930.KS", 0.6, 268_500, PARAMS_CS_WHOLE) is None
+    E2._sell(acct, "005930.KS", acct.positions["005930.KS"].quantity, 268_500, PARAMS_CS_WHOLE)
+    assert "005930.KS" not in acct.positions   # 전량 매도는 소수 잔량까지
+
+
+def test_guard_lock_keeps_stopped_out_ticker_out():
+    from alpha_server.newsdesk.signals import PARAMS_CS_GUARD
+
+    book = Book()
+    book.step(params=PARAMS_CS_GUARD)
+    crash = {**PRICES, "A": 80.0}   # -20% → 손절(-7%)
+    r = book.step(at=NOW + timedelta(days=1), prices=crash, params=PARAMS_CS_GUARD)
+    assert any(d["action"] == "exit" and d["ticker"] == "A" for d in r.decisions)
+    assert "A" not in book.account.positions
+    book.step(at=NOW + timedelta(days=2), prices=crash, params=PARAMS_CS_GUARD)
+    assert "A" not in book.account.positions          # 다음 날 다시 사지 않는다
+    book.step(at=NOW + timedelta(days=9), prices=crash, params=PARAMS_CS_GUARD)
+    assert "A" in book.account.positions              # 잠금이 끝나면 코어로 복귀

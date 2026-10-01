@@ -40,6 +40,12 @@ class NewsParams:
     # 코어 비중으로 돌아간다. 일간 뉴스의 예측력은 1~2일, 1주 안에 사라진다(Tetlock 2007,
     # Heston & Sinha 2017). 4주 이탈은 2026-09 실험에서 상승장 수익을 깎았다.
     lock_days: float = 7.0
+    # core_satellite: 비중 조정·코어 채우기는 목표에서 이 비율 이상 벗어났을 때만.
+    # 상대 20% 밴드가 10·15·25% 보다 나았다(Daryanani 2007, "Opportunistic Rebalancing").
+    band: float = 0.10
+    whole_shares_kr: bool = False    # 한국 주식은 1주 단위로 (실계좌 제약)
+    # core_satellite: 손절·익절로 나간 종목도 lock_days 동안 코어로 다시 사지 않는다
+    guard_lock: bool = False
     label: str = field(default="current", compare=False)
 
 
@@ -64,9 +70,16 @@ PARAMS_CORE_SATELLITE = NewsParams(policy="core_satellite", label="core_satellit
 # 되돌림 차단의 값어치를 재는 대조군
 PARAMS_CORE_SATELLITE_NOLOCK = NewsParams(policy="core_satellite", lock_days=0.0,
                                           label="core_satellite_nolock")
+# 실계좌 준비 (2026-10-01): 20% 밴드, 한국 주식 1주 단위
+PARAMS_CS_BAND = NewsParams(policy="core_satellite", band=0.20, label="cs_band20")
+PARAMS_CS_WHOLE = NewsParams(policy="core_satellite", whole_shares_kr=True, label="cs_whole")
+PARAMS_CS_REAL = NewsParams(policy="core_satellite", band=0.20, whole_shares_kr=True, label="cs_real")
+PARAMS_CS_GUARD = NewsParams(policy="core_satellite", whole_shares_kr=True, guard_lock=True, label="cs_whole_guardlock")
 
-# 실시간 루프가 쓰는 정책. 2026-10-01 판정(docs/NEWSDESK_CORE_SATELLITE.md)으로 current 에서 바꿨다.
-PARAMS_LIVE = PARAMS_CORE_SATELLITE
+PARAMS_LIVE = PARAMS_CS_GUARD
+
+# 실시간 루프가 쓰는 정책. 2026-10-01 판정(docs/NEWSDESK_CORE_SATELLITE.md)으로 current 에서 바꿨고,
+# 같은 날 실계좌 준비로 한국 주식 1주 단위 + 손절·익절 후 잠금을 더했다. band 는 판정에서 탈락.
 
 
 def core_share(temperature: int, news_pct: float | None = None) -> float:
