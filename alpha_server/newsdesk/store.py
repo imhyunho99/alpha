@@ -4,6 +4,7 @@ news.jsonl          해석이 끝난 뉴스 (모든 사용자 공용, 14일 보�
 <u>@<p>_style.json  스타일 규칙
 <u>@<p>_weights.json 신뢰도·고점·평가 대기 신호
 <u>@<p>_decisions.jsonl 판단 기록 (최근 500)
+<u>@<p>_tilts.json   뉴스 매매 잠금 (core_satellite)
 """
 from __future__ import annotations
 
@@ -127,6 +128,25 @@ def save_weights(username: str, portfolio: str, state) -> None:
     _write_json(_path(username, portfolio, "weights.json"), state.to_dict())
 
 
+# --- 뉴스 매매 잠금 ---
+
+def load_tilts(username: str, portfolio: str) -> dict[str, dict]:
+    raw = _read_json(_path(username, portfolio, "tilts.json"))
+    out: dict[str, dict] = {}
+    for t, v in (raw or {}).items() if isinstance(raw, dict) else ():
+        try:
+            out[t] = {"dir": int(v["dir"]), "until": datetime.fromisoformat(v["until"]),
+                      "keep": float(v.get("keep", 1.0))}
+        except (KeyError, TypeError, ValueError):
+            continue   # 깨진 항목 하나 때문에 잠금 전체를 잃지 않는다
+    return out
+
+
+def save_tilts(username: str, portfolio: str, tilts: dict[str, dict]) -> None:
+    _write_json(_path(username, portfolio, "tilts.json"),
+                {t: {**v, "until": v["until"].isoformat()} for t, v in tilts.items()})
+
+
 # --- 판단 기록 ---
 
 def append_decisions(username: str, portfolio: str, decisions: list[dict]) -> None:
@@ -172,8 +192,8 @@ def buys_today(username: str, portfolio: str, now: datetime) -> int:
     day = now.astimezone(_KST).date()
     count = 0
     for d in load_decisions(username, portfolio, limit=DECISIONS_KEEP):
-        if d.get("action") != "buy":
-            continue
+        if d.get("action") != "buy" or d.get("sleeve") == "core":
+            continue   # 코어 채우기는 뉴스 매수 한도를 쓰지 않는다
         try:
             if datetime.fromisoformat(str(d.get("at"))).astimezone(_KST).date() == day:
                 count += 1

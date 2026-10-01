@@ -143,6 +143,7 @@ def run(
     last_action: dict[str, datetime] = {}
     buys_by_day: dict = {}
     benched: dict[str, datetime] = {}
+    tilts: dict[str, dict] = {}
     report = BacktestReport(start=start.isoformat(), end=end.isoformat(), articles=len(interps))
     invested = []
     peak, mdd = capital, 0.0
@@ -159,13 +160,13 @@ def run(
             Journal(actor="backtest", mirror_audit=False),
             watch=watch, buys_today=buys_by_day.get(day, 0),
             acted_item_ids=acted, model_fn=None, last_action_at=last_action,
-            params=params, benched=benched,
+            params=params, benched=benched, tilts=tilts,
         )
         for d in result.decisions:
             acted.update(d.get("item_ids", []))
             if d["action"] in ("buy", "sell", "trim") and d.get("item_ids"):
                 last_action[d["ticker"]] = at
-            if d["action"] == "buy":
+            if d["action"] == "buy" and d.get("sleeve") != "core":
                 buys_by_day[day] = buys_by_day.get(day, 0) + 1
         report.decisions.extend(result.decisions)
         report.trades += len(result.fills)
