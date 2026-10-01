@@ -13,7 +13,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Callable
 
-from ..autopilot.account import Fill, PaperAccount
+import math
+
+from ..autopilot import fx
+from ..autopilot.account import SLIPPAGE_RATE, Fill, PaperAccount
 from ..autopilot.engine import guard
 from ..autopilot.journal import Journal
 from ..autopilot.temperature import RiskProfile
@@ -447,6 +450,35 @@ def _defensive(account, profile, style, weights, snapshot, at, journal, decision
                           exposure=exposure, drawdown_pct=drawdown)
 
 
+def _whole(ticker: str, params: NewsParams) -> bool:
+    """한국 주식은 실계좌에서 1주 단위로만 사고판다. 모의계좌도 같은 제약으로 굴려야 실계좌와 맞는다."""
+    return params.whole_shares_kr and fx.native_currency(ticker) == "KRW"
+
+
+def _buy(account, t, amount, price, snapshot, max_leverage, params, limit=None):
+    """limit: 이번 매수로 더 담을 수 있는 최대 금액(종목 상한 - 현재 보유)."""
+    if _whole(t, params):
+        unit = price * (1 + SLIPPAGE_RATE)
+        # 내림이 아니라 가장 가까운 주 수. 내리면 코어 한 칸(약 26만원)으로 삼성전자(약 27만원)도 못 산다.
+        shares = math.floor(amount / unit + 0.5)
+        if limit is not None:
+            shares = min(shares, math.floor(limit / unit + 1e-9))
+        if shares < 1:
+            return None
+        amount = shares * unit
+    return account.buy(t, amount, price, snapshot, max_leverage)
+
+
+def _sell(account, t, qty, price, params):
+    held = account.positions[t].quantity
+    if _whole(t, params) and qty < held - 1e-9:
+        # 전량 매도가 아니면 1주 단위로 내린다. 예전 소수 주 잔량은 전량 매도 때 함께 나간다.
+        qty = math.floor(qty + 1e-9)
+        if qty < 1:
+            return None
+    return account.sell(t, min(qty, held), price)
+
+
 def _locked(tilts: dict[str, dict], ticker: str, direction: int, at: datetime) -> bool:
     t = tilts.get(ticker)
     return bool(t) and t["dir"] == direction and at < t["until"]
@@ -469,6 +501,12 @@ def _core_satellite(account, profile, style, weights, snapshot, at, journal, dec
     lock = timedelta(days=params.lock_days) if params.lock_days > 0 else timedelta(hours=TICKER_COOLDOWN_HOURS)
     for t in [t for t, v in tilts.items() if at >= v["until"]]:
         del tilts[t]
+    if params.guard_lock:
+        # 손절·익절 다음 날 코어 채우기가 다시 사면 수수료만 내는 왕복이다.
+        # 실측(백테스트 1년): 손절 144·익절 109회 뒤 재편입 295회가 매매의 절반이었다.
+        for d in decisions:
+            if d["action"] == "exit":
+                tilts[d["ticker"]] = {"dir": -1, "until": at + lock, "keep": 0.0}
 
     core = [t for t in (style.focus_tickers or watch) if t not in style.avoid_tickers and t in snapshot]
     core_set = set(core)
@@ -526,7 +564,7 @@ def _core_satellite(account, profile, style, weights, snapshot, at, journal, dec
             continue
         goal = 0.0 if keep == 0 else target(t, price)
         qty = account.positions[t].quantity - goal / price
-        fill = account.sell(t, qty, price) if qty > 0 else None
+        fill = _sell(account, t, qty, price, params) if qty > 0 else None
         if fill:
             fills.append(fill)
             W.record_signal(weights, signal_key(cat), t, -1, price, at)
@@ -589,7 +627,8 @@ def _core_satellite(account, profile, style, weights, snapshot, at, journal, dec
             if gap <= max(goal * TOLERANCE, MIN_TRADE_KRW):
                 del tilts[t]   # 이미 상한까지 들고 있다
                 continue
-            fill = account.buy(t, gap, price, snapshot, profile.max_leverage)
+            fill = _buy(account, t, gap, price, snapshot, profile.max_leverage, params,
+                        limit=per_cap - (held.quantity * price if held else 0.0))
             if not fill:
                 del tilts[t]
                 continue
@@ -619,9 +658,9 @@ def _core_satellite(account, profile, style, weights, snapshot, at, journal, dec
         goal = target(t, price)
         current = account.positions[t].quantity * price
         excess = current - goal
-        if excess <= max(goal * TOLERANCE, MIN_TRADE_KRW):
+        if excess <= max(goal * params.band, MIN_TRADE_KRW):
             continue
-        fill = account.sell(t, excess / price, price)
+        fill = _sell(account, t, excess / price, price, params)
         if not fill:
             continue
         fills.append(fill)
@@ -644,9 +683,10 @@ def _core_satellite(account, profile, style, weights, snapshot, at, journal, dec
         goal = target(t, price)
         held = account.positions.get(t)
         gap = goal - (held.quantity * price if held else 0.0)
-        if gap <= max(goal * TOLERANCE, MIN_TRADE_KRW):
+        if gap <= max(goal * params.band, MIN_TRADE_KRW):
             continue
-        fill = account.buy(t, gap, price, snapshot, profile.max_leverage)
+        fill = _buy(account, t, gap, price, snapshot, profile.max_leverage, params,
+                        limit=per_cap - (held.quantity * price if held else 0.0))
         if not fill:
             continue
         fills.append(fill)
