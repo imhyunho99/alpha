@@ -362,7 +362,7 @@ def post_broker_check(payload: BrokerPayload, user: UserPublic = Depends(require
         broker = build_broker_for_user(user.username, name, dry_run=True)
     except ValueError:
         return {"ok": False, "message": f"{name.upper()} API 키가 등록되지 않았습니다. "
-                                        "[계정 → 거래소 API 키 관리]에서 등록하세요."}
+                                        "[계정 → API 키 관리]에서 등록하세요."}
     snap = broker.get_portfolio()
     if snap.get("error"):
         return {"ok": False, "message": f"연결 실패: {snap['error']}"}

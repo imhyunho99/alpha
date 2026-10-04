@@ -60,7 +60,7 @@ def broker_text(view: dict) -> str:
     label = {"kb": "KB증권"}.get(name, name.upper())
     parts = [f"🔴 {label} 실주문 중" if not view.get("dry_run", True) else f"{label} · 주문 기록만 (실제 주문 안 나감)"]
     if not view.get("registered"):
-        parts.append("API 키 미등록 — [계정 → 거래소 API 키 관리]에서 등록하세요")
+        parts.append("API 키 미등록 — [계정 → API 키 관리]에서 등록하세요")
     last = view.get("last") or {}
     if last:
         when = _short_time(last.get("at"))
@@ -244,6 +244,9 @@ class NewsTab(QWidget):
         self.broker_check_btn = QPushButton("연결 확인")
         self.broker_check_btn.clicked.connect(self._on_broker_check)
         broker_row.addWidget(self.broker_check_btn)
+        self.broker_keys_btn = QPushButton("키 등록")
+        self.broker_keys_btn.clicked.connect(self._on_broker_keys)
+        broker_row.addWidget(self.broker_keys_btn)
         self.broker_label = QLabel("")
         self.broker_label.setWordWrap(True)
         broker_row.addWidget(self.broker_label, 1)
@@ -301,6 +304,12 @@ class NewsTab(QWidget):
         if portfolio is None:
             return
         self._run(core.set_broker, self._on_broker, portfolio, self.broker_combo.currentData())
+
+    def _on_broker_keys(self):
+        from alpha.strategy_widgets import ApiKeyDialog
+
+        ApiKeyDialog(self, broker=self.broker_combo.currentData() or "kb").exec()
+        self._refresh_state()
 
     def _on_broker_check(self):
         portfolio = self.current_portfolio()

@@ -503,3 +503,48 @@ def test_login_connection_error_and_empty_fields(monkeypatch):
     monkeypatch.setattr(core.requests, "post", down)
     assert core.login("hyunho", "x" * 8)["error"] == "서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요."
     assert core.login("", "")["error"] == "아이디와 비밀번호를 입력해 주세요."
+
+
+def test_api_connect_prompt_only_when_needed(monkeypatch, tmp_path):
+    from alpha import strategy_widgets as sw
+
+    monkeypatch.setattr(sw, "PREFS_FILE", str(tmp_path / "prefs.json"))
+    shown = []
+
+    class Fake:
+        def __init__(self, parent=None, registered=None):
+            shown.append(registered)
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(sw, "ApiConnectDialog", Fake)
+    monkeypatch.setattr(sw, "registered_apis", lambda: {"kb"})
+    sw.maybe_prompt_api_connect()
+    assert shown == [{"kb"}]                       # Claude 가 아직 없다
+    monkeypatch.setattr(sw, "registered_apis", lambda: {"kb", "anthropic"})
+    sw.maybe_prompt_api_connect()
+    assert len(shown) == 1                         # 다 연결됐으면 묻지 않음
+    monkeypatch.setattr(sw, "registered_apis", lambda: None)
+    sw.maybe_prompt_api_connect()
+    assert len(shown) == 1                         # 서버에 못 물으면 묻지 않음
+    sw._save_prefs({"skip_api_prompt": True})
+    monkeypatch.setattr(sw, "registered_apis", lambda: set())
+    sw.maybe_prompt_api_connect()
+    assert len(shown) == 1                         # '다음부터 묻지 않기'
+
+
+def test_api_dialogs_build(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])  # noqa: F841 — 위젯 생성에 필요
+    from alpha import strategy_widgets as sw
+
+    monkeypatch.setattr(sw.core, "_handle_request", lambda *a, **k: {"brokers": []})
+    d = sw.ApiConnectDialog(registered={"kb"})
+    assert d.status_labels["kb"].text().startswith("✅")
+    assert d.status_labels["anthropic"].text().startswith("⚪")
+    k = sw.ApiKeyDialog(broker="kb")
+    assert k.broker_box.currentData() == "kb" and k.broker_box.currentText() == "KB증권"
+    assert set(k._field_widgets) == {"app_key", "app_secret"}

@@ -11,7 +11,9 @@ from PySide6.QtGui import QFont, QAction
 from alpha import core
 from alpha.autopilot_widgets import AutopilotTab
 from alpha.news_widgets import NewsTab
-from alpha.strategy_widgets import ApiKeyDialog, LoginDialog, StrategyChatTab
+from alpha.strategy_widgets import (
+    ApiConnectDialog, ApiKeyDialog, LoginDialog, StrategyChatTab, registered_apis,
+)
 
 class WorkerThread(QThread):
     """백그라운드 작업을 처리하는 스레드"""
@@ -122,11 +124,14 @@ class AlphaGUI(QMainWindow):
         login_act.triggered.connect(self._open_login)
         logout_act = QAction("로그아웃", self)
         logout_act.triggered.connect(self._logout)
-        keys_act = QAction("거래소 API 키 관리…", self)
+        connect_act = QAction("API 연결…", self)
+        connect_act.triggered.connect(lambda: ApiConnectDialog(self, registered=registered_apis()).exec())
+        keys_act = QAction("API 키 관리…", self)
         keys_act.triggered.connect(self._open_keys)
         account.addAction(login_act)
         account.addAction(logout_act)
         account.addSeparator()
+        account.addAction(connect_act)
         account.addAction(keys_act)
 
     def _on_auth_expired(self):
