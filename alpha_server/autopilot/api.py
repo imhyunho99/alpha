@@ -118,8 +118,9 @@ def put_config(payload: ConfigPayload, user: UserPublic = Depends(require_user))
     previous = store.load_config(user.username, portfolio)
     if cfg["mode"] is None:
         cfg["mode"] = previous.get("mode", "model")
-    if previous.get("broker"):
-        cfg["broker"] = previous["broker"]   # 증권사 연동 설정은 /autopilot/broker 만 바꾼다
+    for key in ("broker", "signal"):
+        if previous.get(key):
+            cfg[key] = previous[key]   # 화면이 모르는 설정은 지우지 않는다(연동·신호 종류)
     if previous.get("mode", "model") != cfg["mode"]:
         # 모드가 바뀌면 옛 엔진의 루프를 먼저 내린다. 안 그러면 두 루프가 한 계좌를 굴린다.
         stop_live(user.username, portfolio)
@@ -188,11 +189,16 @@ def post_backtest(payload: BacktestPayload, user: UserPublic = Depends(require_u
     profile = profile_for(payload.temperature)
     # 티어를 가로질러 뽑는다 — 머리부터 자르면 온도 10에서도 코인이 안 들어간다
     tickers = universe.sample_across_tiers(profile.universe_tiers, 60)
-    frames = download_many(tickers, period=f"{payload.years}y")
+    # 팩터 신호는 12개월 데이터가 쌓여야 나온다. 1년을 더 받아 시험 구간 첫날부터 신호가 있게 한다.
+    frames = download_many(tickers, period=f"{payload.years + 1}y")
 
     # 점 시점 신호 — 예측 함수를 직접 넣으면 매 스텝이 최신 데이터를 보게 되어
     # 미래를 참조한 곡선이 나온다. 미리 시계열로 만들어 두고 조회만 한다.
-    signal_table = build_signal_table(frames, horizon="medium")
+    from .factors import build_factor_table
+    from .runner import DEFAULT_SIGNAL, FACTOR_KIND
+
+    signal_table = (build_factor_table(frames, FACTOR_KIND) if DEFAULT_SIGNAL == "factor"
+                    else build_signal_table(frames, horizon="medium"))
 
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=365 * payload.years)
