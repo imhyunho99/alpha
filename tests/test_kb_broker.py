@@ -548,3 +548,24 @@ def test_api_dialogs_build(monkeypatch):
     k = sw.ApiKeyDialog(broker="kb")
     assert k.broker_box.currentData() == "kb" and k.broker_box.currentText() == "KB증권"
     assert set(k._field_widgets) == {"app_key", "app_secret"}
+
+
+def test_autopilot_tab_retries_portfolio_list(monkeypatch):
+    """10/4 E2E: 목록 요청이 한 번 실패하면 'default' 하나로 굳었다."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    from alpha import autopilot_widgets as aw
+
+    monkeypatch.setattr(aw.AutopilotTab, "_load_portfolios", lambda self, select=None: None)
+    monkeypatch.setattr(aw.AutopilotTab, "_load_config", lambda self: None)
+    scheduled = []
+    monkeypatch.setattr(aw.QTimer, "singleShot", staticmethod(lambda ms, fn: scheduled.append(ms)))
+    tab = aw.AutopilotTab()
+    tab._on_portfolios({"error": "서버 응답 시간이 초과되었습니다."})
+    assert scheduled == [aw.PORTFOLIO_RETRY_MS]
+    tab._on_portfolios({"error": "만료", "auth_expired": True})
+    assert len(scheduled) == 1                     # 로그인 만료면 재시도 대신 로그인 후 다시 부른다
+    tab._on_portfolios({"portfolios": [{"portfolio": "balanced-factor", "temperature": 5, "mode": "model"}]})
+    assert tab.known_portfolios() == ["balanced-factor"]

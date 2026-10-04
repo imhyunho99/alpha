@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import QPointF, Qt, QThread, Signal
+from PySide6.QtCore import QPointF, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QComboBox,
@@ -92,6 +92,12 @@ class EquityCurve(QWidget):
             painter.drawLine(QPointF(x, 10.0), QPointF(x, float(h - 10)))
 
 
+# 앱 시작 때 탭들이 한꺼번에 서버를 두드리면 목록 요청(혼자서도 약 4초)이 10초 제한에 걸린다.
+# 실측(2026-10-04 E2E): 한 번 실패로 끝나 목록이 'default' 하나로 굳었다. 뉴스 탭과 같이 다시 시도한다.
+PORTFOLIO_RETRY_MAX = 5
+PORTFOLIO_RETRY_MS = 4000
+
+
 class AutopilotTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -103,6 +109,7 @@ class AutopilotTab(QWidget):
         self._syncing_portfolios = False
         self._pending_selection: str | None = None
         self._pending_new: str | None = None
+        self._portfolio_retries = 0
         self._build()
         self._load_portfolios()
         self._load_config()
@@ -242,8 +249,20 @@ class AutopilotTab(QWidget):
         self._pending_selection = select
         self._run(core.autopilot_portfolios, self._on_portfolios)
 
+    def reload_portfolios(self):
+        """로그인 직후처럼 처음부터 다시 불러올 때."""
+        self._portfolio_retries = 0
+        self._load_portfolios(select=self.current_portfolio())
+
     def _on_portfolios(self, result):
         """목록을 콤보에 채운다. 서버가 죽어 있으면 default 하나만 남긴다."""
+        if not isinstance(result, dict) or "error" in result:
+            if self._portfolio_retries < PORTFOLIO_RETRY_MAX and not (isinstance(result, dict) and result.get("auth_expired")):
+                self._portfolio_retries += 1
+                pending = getattr(self, "_pending_selection", None)
+                QTimer.singleShot(PORTFOLIO_RETRY_MS, lambda: self._load_portfolios(select=pending))
+            return
+        self._portfolio_retries = 0
         entries = []
         if isinstance(result, dict) and "error" not in result:
             raw = result.get("portfolios")
