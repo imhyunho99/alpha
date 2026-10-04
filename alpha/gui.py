@@ -103,7 +103,8 @@ class AlphaGUI(QMainWindow):
             return
 
         if not core.is_logged_in():
-            LoginDialog(self).exec()
+            if LoginDialog(self).exec() == QDialog.Accepted:
+                self._after_login()
 
     def _update_health_status(self):
         result = core.server_health()
@@ -143,6 +144,7 @@ class AlphaGUI(QMainWindow):
             self.statusBar().showMessage("🔑 로그인이 만료되었습니다. 다시 로그인해 주세요.")
             if LoginDialog(self).exec() == QDialog.Accepted:
                 self.statusBar().showMessage("다시 로그인됨", 3000)
+                self._after_login()
                 current = self.tabs.currentWidget()
                 for name in ("_on_refresh_clicked", "_refresh_state"):
                     if hasattr(current, name):
@@ -151,9 +153,16 @@ class AlphaGUI(QMainWindow):
         finally:
             self._login_prompt_open = False
 
+    def _after_login(self):
+        """로그인 전에 열린 탭들은 목록을 못 받았다(401). 로그인하면 다시 불러온다."""
+        for tab in (self.autopilot_tab, self.news_tab):
+            if hasattr(tab, "reload_portfolios"):
+                tab.reload_portfolios()
+
     def _open_login(self):
         if LoginDialog(self).exec() == QDialog.Accepted:
             self.statusBar().showMessage("로그인됨", 3000)
+            self._after_login()
 
     def _logout(self):
         core.logout()

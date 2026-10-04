@@ -388,6 +388,11 @@ class NewsTab(QWidget):
     def known_portfolios(self) -> list[str]:
         return [self.portfolio_combo.itemData(i) for i in range(self.portfolio_combo.count())]
 
+    def reload_portfolios(self):
+        """로그인 직후처럼 처음부터 다시 불러올 때."""
+        self._portfolio_retries = 0
+        self._load_portfolios(select=self.current_portfolio())
+
     def _retry_portfolios(self):
         self._load_portfolios(select=self._pending_selection)
 
