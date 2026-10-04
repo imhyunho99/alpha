@@ -18,7 +18,7 @@ from cryptography.fernet import Fernet, InvalidToken
 VAULT_FILE = os.path.expanduser("~/AlphaModels/credentials.vault")
 VAULT_KEY_FILE = os.path.expanduser("~/AlphaModels/.vault_key")
 
-SUPPORTED_BROKERS = {"alpaca", "upbit", "binance", "kis", "anthropic"}
+SUPPORTED_BROKERS = {"alpaca", "upbit", "binance", "kis", "kb", "anthropic"}
 # anthropic은 LLM 파서용 — 거래소는 아니지만 같은 vault에 저장한다.
 
 
@@ -142,5 +142,6 @@ def required_fields(broker: str) -> list[str]:
         "upbit": ["access_key", "secret_key"],
         "binance": ["api_key", "api_secret"],
         "kis": ["app_key", "app_secret", "account_no", "account_product_code"],
+        "kb": ["app_key", "app_secret"],   # 계좌는 KB 앱 키에 묶여 있다
         "anthropic": ["api_key"],
     }[broker.lower()]

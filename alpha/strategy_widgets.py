@@ -51,6 +51,10 @@ BROKER_FIELDS = {
         ("account_no", "Account No (예: 12345678-01)", False),
         ("account_product_code", "Account Product Code (default 01)", False),
     ],
+    "kb": [
+        ("app_key", "App Key (KB증권 홈페이지 > 고객서비스 > Open API)", False),
+        ("app_secret", "App Secret", True),
+    ],
     "anthropic": [
         ("api_key", "Anthropic API Key (자연어 파싱용)", True),
     ],

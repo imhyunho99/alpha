@@ -118,6 +118,8 @@ def put_config(payload: ConfigPayload, user: UserPublic = Depends(require_user))
     previous = store.load_config(user.username, portfolio)
     if cfg["mode"] is None:
         cfg["mode"] = previous.get("mode", "model")
+    if previous.get("broker"):
+        cfg["broker"] = previous["broker"]   # 증권사 연동 설정은 /autopilot/broker 만 바꾼다
     if previous.get("mode", "model") != cfg["mode"]:
         # 모드가 바뀌면 옛 엔진의 루프를 먼저 내린다. 안 그러면 두 루프가 한 계좌를 굴린다.
         stop_live(user.username, portfolio)
@@ -261,3 +263,109 @@ def get_alerts(portfolio: str = "default", user: UserPublic = Depends(require_us
             {"severity": a.severity, "code": a.code, "message": a.message} for a in alerts
         ]
     }
+
+
+
+# ---------- 증권사 연동 (모의계좌 → 실계좌) ----------
+# 실주문 전환은 CLAUDE.md 6번 게이트: 명시적 PATCH + 확인 문구로만. 연동을 켜거나 끄면
+# 항상 '기록만'(dry_run)으로 돌아간다.
+
+LIVE_CONFIRM = "실거래 전환"
+
+
+class BrokerPayload(BaseModel):
+    portfolio: str = Field(default="default", pattern=PORTFOLIO_PATTERN)
+    name: str | None = Field(default=None, pattern=r"^(kb|kis|alpaca)$")
+
+
+class BrokerLivePayload(BaseModel):
+    portfolio: str = Field(default="default", pattern=PORTFOLIO_PATTERN)
+    live: bool
+    confirm: str = ""
+
+
+def _broker_view(username: str, portfolio: str) -> dict:
+    from .. import credentials
+    from . import mirror
+
+    cfg = store.load_config(username, portfolio)
+    opts = mirror.settings(cfg)
+    state = mirror.load_state(username, portfolio)
+    return {
+        "portfolio": portfolio,
+        "broker": opts["name"] if opts else None,
+        "dry_run": opts["dry_run"] if opts else True,
+        "registered": bool(opts and credentials.get_credentials(username, opts["name"])),
+        "last": state.get("last"),
+        "orders": list(reversed(state.get("orders", [])[-30:])),
+    }
+
+
+@router.get("/broker", summary="증권사 연동 상태와 최근 주문")
+def get_broker(portfolio: str = "default", user: UserPublic = Depends(require_user)):
+    return _broker_view(user.username, portfolio)
+
+
+@router.put("/broker", summary="증권사 연동 켜기/끄기 (항상 '기록만'으로 시작)")
+def put_broker(payload: BrokerPayload, user: UserPublic = Depends(require_user)):
+    from .. import audit_log
+
+    cfg = store.load_config(user.username, payload.portfolio)
+    if payload.name:
+        cfg["broker"] = {"name": payload.name, "dry_run": True}
+    else:
+        cfg.pop("broker", None)
+    store.save_config(user.username, cfg, payload.portfolio)
+    audit_log.record("config", "broker_mirror_set", actor=user.username,
+                     portfolio=payload.portfolio, broker=payload.name, dry_run=True)
+    return _broker_view(user.username, payload.portfolio)
+
+
+@router.patch(
+    "/broker/live",
+    summary="실주문 전환 — 확인 문구 필요",
+    dependencies=[Depends(rate_limit("broker_live", capacity=3, per_seconds=60))],
+)
+def patch_broker_live(payload: BrokerLivePayload, user: UserPublic = Depends(require_user)):
+    from fastapi import HTTPException
+
+    from .. import audit_log, credentials
+
+    cfg = store.load_config(user.username, payload.portfolio)
+    b = cfg.get("broker")
+    if not isinstance(b, dict) or not b.get("name"):
+        raise HTTPException(status_code=400, detail="증권사 연동이 꺼져 있습니다.")
+    if payload.live:
+        if payload.confirm != LIVE_CONFIRM:
+            raise HTTPException(status_code=400, detail=f"확인 문구 '{LIVE_CONFIRM}'가 필요합니다.")
+        if not credentials.get_credentials(user.username, b["name"]):
+            raise HTTPException(status_code=400, detail=f"{b['name']} API 키가 등록되지 않았습니다.")
+    b["dry_run"] = not payload.live
+    store.save_config(user.username, cfg, payload.portfolio)
+    audit_log.record("config", "broker_mirror_live", actor=user.username,
+                     portfolio=payload.portfolio, broker=b["name"], dry_run=b["dry_run"])
+    return _broker_view(user.username, payload.portfolio)
+
+
+@router.post(
+    "/broker/check",
+    summary="키로 증권사에 붙어 잔고를 읽어본다 (주문 없음)",
+    dependencies=[Depends(rate_limit("broker_check", capacity=6, per_seconds=60))],
+)
+def post_broker_check(payload: BrokerPayload, user: UserPublic = Depends(require_user)):
+    from ..brokers import build_broker_for_user
+
+    name = payload.name or (store.load_config(user.username, payload.portfolio).get("broker") or {}).get("name")
+    if not name:
+        return {"ok": False, "message": "연동할 증권사를 먼저 고르세요."}
+    try:
+        broker = build_broker_for_user(user.username, name, dry_run=True)
+    except ValueError:
+        return {"ok": False, "message": f"{name.upper()} API 키가 등록되지 않았습니다. "
+                                        "[계정 → 거래소 API 키 관리]에서 등록하세요."}
+    snap = broker.get_portfolio()
+    if snap.get("error"):
+        return {"ok": False, "message": f"연결 실패: {snap['error']}"}
+    return {"ok": True, "message": f"연결됨 · 평가액 {snap.get('total_value', 0):,.0f}원 · "
+                                   f"보유 {len(snap.get('positions', []))}종목",
+            "total_value": snap.get("total_value", 0)}
