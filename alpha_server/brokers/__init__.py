@@ -4,7 +4,7 @@
 - build_broker(): 환경변수 ALPHA_BROKER로 전역 브로커(보통 mock) 생성. 하위 호환용.
 - build_broker_for_user(username, broker_name): vault에 저장된 사용자 자격증명으로 실거래 브로커 생성.
 
-지원: mock, alpaca, upbit, binance, kis
+지원: mock, alpaca, upbit, binance, kis, kb
 """
 from __future__ import annotations
 
@@ -71,11 +71,16 @@ def build_broker_for_user(username: str, broker_name: str, *, dry_run: bool = Tr
             dry_run=dry_run,
         )
 
+    if name == "kb":
+        from .kb_broker import KbBroker
+
+        return KbBroker(app_key=creds["app_key"], app_secret=creds["app_secret"], dry_run=dry_run)
+
     raise ValueError(f"알 수 없는 broker: {broker_name}")
 
 
 def supported_brokers() -> list[str]:
-    return ["mock", "alpaca", "upbit", "binance", "kis"]
+    return ["mock", "alpaca", "upbit", "binance", "kis", "kb"]
 
 
 __all__ = [

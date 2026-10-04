@@ -22,6 +22,45 @@ from .temperature import profile_for
 LIVE_INTERVAL_SEC = int(os.getenv("ALPHA_AUTOPILOT_INTERVAL_SEC", "3600"))
 LIVE_UNIVERSE_CAP = 150
 
+# 모델 모드 계좌의 신호. 설정 "signal" 로 고른다.
+#   "ml": 글로벌 ML 모델 (기본)
+#   "factor": 규칙 기반 위험조정 모멘텀 + 200일 추세 필터
+# 2026-10-04 판정(docs/AUTOPILOT_FACTORS.md): factor 는 온도 5 에서 두 기간 모두 ML 을 이겼지만
+# 온도 2·8 에서는 졌다. 기본값을 바꿀 근거가 부족해 실운용 비교(hyunho/balanced-factor)로 확인한다.
+DEFAULT_SIGNAL = "ml"
+FACTOR_KIND = "risk_adj_momentum"
+
+
+def signal_kind(cfg: dict) -> str:
+    return cfg["signal"] if cfg.get("signal") in ("ml", "factor") else DEFAULT_SIGNAL
+
+
+_factor_cache: dict[tuple, object] = {}
+
+
+def _local_frames(tickers: list[str]) -> dict:
+    from ..data_handler import load_from_csv
+
+    frames = {}
+    for t in tickers:
+        df = load_from_csv(t)
+        if df is not None and not df.empty and "Close" in df.columns:
+            frames[t] = df
+    return frames
+
+
+def _factor_table(tickers: list[str], day) -> object:
+    """하루 한 번 만든다. 일봉 신호라 하루 안에는 바뀌지 않는다."""
+    from .factors import build_factor_table
+
+    key = (day, tuple(sorted(tickers)))
+    table = _factor_cache.get(key)
+    if table is None:
+        _factor_cache.clear()
+        table = build_factor_table(_local_frames(tickers), FACTOR_KIND)
+        _factor_cache[key] = table
+    return table
+
 # 한 사용자가 온도가 다른 계좌를 여러 개 굴린다. 루프는 (username, portfolio) 단위다.
 LiveKey = tuple[str, str]
 
@@ -173,7 +212,6 @@ def catch_up(username: str, portfolio: str = "default") -> int:
     """
     from datetime import timedelta
 
-    from ..data_handler import load_from_csv
     from . import fx
     from .signals import build_signal_table
 
@@ -197,17 +235,18 @@ def catch_up(username: str, portfolio: str = "default") -> int:
 
     # 신호는 일봉 CSV 로 만들고, 재생 걸음은 시간봉으로 걷는다. 온도 10은
     # 4시간마다 리밸런싱하므로 일 단위로는 재현이 안 된다.
-    frames = {}
-    for t in tickers:
-        df = load_from_csv(t)
-        if df is not None and not df.empty and "Close" in df.columns:
-            frames[t] = df
+    frames = _local_frames(tickers)
     if not frames:
         print(f"{tag} 공백 재생 실패 — 로컬 시세가 없습니다", flush=True)
         return 0
 
     try:
-        table = build_signal_table(frames, horizon=cfg.get("horizon", "medium"))
+        if signal_kind(cfg) == "factor":
+            from .factors import build_factor_table
+
+            table = build_factor_table(frames, FACTOR_KIND)
+        else:
+            table = build_signal_table(frames, horizon=cfg.get("horizon", "medium"))
     except Exception as exc:
         print(f"{tag} 공백 재생 실패 — 신호 생성 오류: {exc}", flush=True)
         return 0
@@ -308,7 +347,13 @@ def _live_once_locked(username: str, portfolio: str) -> None:
         account = PaperAccount(cash=float(cfg["capital"]))
 
     account.accrue_interest(days=LIVE_INTERVAL_SEC / 86400.0)
-    prob_fn, score_fn = _load_live_signals()
+    if signal_kind(cfg) == "factor":
+        now = datetime.now(timezone.utc)
+        table = _factor_table(tickers, now.date())
+        prob_fn = lambda t, h: table.prob_at(t, now)    # noqa: E731
+        score_fn = lambda t, h: table.score_at(t, now)  # noqa: E731
+    else:
+        prob_fn, score_fn = _load_live_signals()
     outcome = step(
         account=account, profile=profile, tickers=tickers,
         prices=LivePrices(), clock=LiveClock(),

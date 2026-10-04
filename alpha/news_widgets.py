@@ -48,6 +48,43 @@ CATEGORY_LABELS = {
 
 ACTION_LABELS = {"buy": "매수", "sell": "매도", "trim": "일부 매도", "hold": "유지", "hold_off": "매수 보류"}
 
+BROKER_CHOICES = [("연동 안 함", None), ("KB증권 — 주문 기록만", "kb")]
+ORDER_LABELS = {"buy": "매수", "sell": "매도"}
+
+
+def broker_text(view: dict) -> str:
+    """연동 상태 한 줄. 실주문 중이면 반드시 눈에 띄게."""
+    name = view.get("broker")
+    if not name:
+        return "연동 안 함 — 모의계좌만 굴립니다."
+    label = {"kb": "KB증권"}.get(name, name.upper())
+    parts = [f"🔴 {label} 실주문 중" if not view.get("dry_run", True) else f"{label} · 주문 기록만 (실제 주문 안 나감)"]
+    if not view.get("registered"):
+        parts.append("API 키 미등록 — [계정 → API 키 관리]에서 등록하세요")
+    last = view.get("last") or {}
+    if last:
+        when = _short_time(last.get("at"))
+        if last.get("status") == "error":
+            parts.append(f"마지막 연동 {when} 실패: {last.get('message', '')}")
+        else:
+            eq = last.get("real_equity")
+            parts.append(f"마지막 연동 {when} · 주문 {last.get('orders', 0)}건"
+                         + (f" · 실계좌 {eq:,.0f}원" if isinstance(eq, (int, float)) else "")
+                         + (f" · {last['message']}" if last.get("message") else ""))
+    else:
+        parts.append("다음 매매 때 첫 연동")
+    return " · ".join(parts)
+
+
+def order_result_text(o: dict) -> str:
+    status = o.get("status")
+    if status == "success":
+        return "기록됨" if o.get("dry_run", True) else f"주문 접수 {o.get('order_no', '')}".strip()
+    if status == "risk_blocked":
+        return f"위험 한도로 보류: {o.get('message', '')}"
+    return f"실패: {o.get('message', '')}"
+
+
 STYLE_PLACEHOLDER = (
     "예) 반도체랑 AI 위주로 담고 테슬라는 빼줘.\n"
     "규제나 소송 뉴스가 뜨면 바로 팔고, 실적 호재에는 적극적으로 사줘.\n"
@@ -195,6 +232,30 @@ class NewsTab(QWidget):
         control.addStretch(1)
         layout.addLayout(control)
 
+        # 증권사 연동 — 모의계좌 비중을 실계좌로. 앱에서는 '기록만'까지만 켤 수 있다.
+        broker_box = QGroupBox("증권사 연동 (모의계좌 비중을 실계좌에 맞춤)")
+        broker_layout = QVBoxLayout(broker_box)
+        broker_row = QHBoxLayout()
+        self.broker_combo = QComboBox()
+        for label, key in BROKER_CHOICES:
+            self.broker_combo.addItem(label, key)
+        self.broker_combo.activated.connect(self._on_broker_chosen)
+        broker_row.addWidget(self.broker_combo)
+        self.broker_check_btn = QPushButton("연결 확인")
+        self.broker_check_btn.clicked.connect(self._on_broker_check)
+        broker_row.addWidget(self.broker_check_btn)
+        self.broker_keys_btn = QPushButton("키 등록")
+        self.broker_keys_btn.clicked.connect(self._on_broker_keys)
+        broker_row.addWidget(self.broker_keys_btn)
+        self.broker_label = QLabel("")
+        self.broker_label.setWordWrap(True)
+        broker_row.addWidget(self.broker_label, 1)
+        broker_layout.addLayout(broker_row)
+        self.broker_table = _make_table(["시각", "종목", "주문", "수량", "결과"])
+        self.broker_table.setFixedHeight(110)
+        broker_layout.addWidget(self.broker_table)
+        layout.addWidget(broker_box)
+
         # 상태 패널
         status_box = QGroupBox("현재 상태 (30초마다 자동 새로고침)")
         status = QVBoxLayout(status_box)
@@ -233,6 +294,53 @@ class NewsTab(QWidget):
         has = self.current_portfolio() is not None
         self.start_btn.setEnabled(has)
         self.save_btn.setEnabled(has)
+        self.broker_combo.setEnabled(has)
+        self.broker_check_btn.setEnabled(has)
+
+    # --- 증권사 연동 ---
+
+    def _on_broker_chosen(self, _index: int):
+        portfolio = self.current_portfolio()
+        if portfolio is None:
+            return
+        self._run(core.set_broker, self._on_broker, portfolio, self.broker_combo.currentData())
+
+    def _on_broker_keys(self):
+        from alpha.strategy_widgets import ApiKeyDialog
+
+        ApiKeyDialog(self, broker=self.broker_combo.currentData() or "kb").exec()
+        self._refresh_state()
+
+    def _on_broker_check(self):
+        portfolio = self.current_portfolio()
+        if portfolio is None:
+            return
+        self.broker_label.setText("연결 확인 중…")
+        self._run(core.check_broker, self._on_broker_checked, portfolio, self.broker_combo.currentData())
+
+    def _on_broker_checked(self, result):
+        if not isinstance(result, dict) or "error" in result:
+            self.broker_label.setText("연결 확인에 실패했습니다. 서버·로그인 상태를 확인하세요.")
+            return
+        self.broker_label.setText(("✅ " if result.get("ok") else "⚠️ ") + str(result.get("message", "")))
+
+    def _on_broker(self, view):
+        if not isinstance(view, dict) or "error" in view:
+            self.broker_label.setText("연동 상태를 가져오지 못했습니다.")
+            return
+        self.broker_label.setText(broker_text(view))
+        idx = self.broker_combo.findData(view.get("broker"))
+        self.broker_combo.setCurrentIndex(max(0, idx))
+        _fill(self.broker_table, [
+            [
+                _short_time(o.get("at")),
+                str(o.get("ticker") or ""),
+                ORDER_LABELS.get(o.get("action"), str(o.get("action") or "")),
+                f"{_num(o.get('quantity')):g}",
+                order_result_text(o),
+            ]
+            for o in _rows(view.get("orders"))
+        ])
 
     # --- 워커 ---
 
@@ -460,6 +568,7 @@ class NewsTab(QWidget):
         if portfolio is None:
             return
         self._run(core.newsdesk_state, self._on_state, portfolio)
+        self._run(core.broker_state, self._on_broker, portfolio)
 
     def _on_state(self, state):
         if not isinstance(state, dict) or "error" in state:

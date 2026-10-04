@@ -1,6 +1,8 @@
+import base64
 import json
 import os
-from typing import Optional
+import time
+from typing import Callable, Optional
 from urllib.parse import urlencode
 
 import requests
@@ -32,12 +34,53 @@ def save_token(token: str) -> None:
 
 def clear_token() -> None:
     if os.path.exists(TOKEN_FILE):
-        os.remove(TOKEN_FILE)
+        try:
+            os.remove(TOKEN_FILE)
+        except OSError:
+            pass
+
+
+AUTH_EXPIRED_MESSAGE = "로그인이 만료되었습니다. 다시 로그인해 주세요."
+
+# 토큰이 만료되면 부른다. GUI 가 로그인 창을 띄우도록 등록한다. 작업 스레드에서 불릴 수 있다.
+_on_auth_expired: Optional[Callable[[], None]] = None
+
+
+def set_auth_expired_handler(fn: Optional[Callable[[], None]]) -> None:
+    global _on_auth_expired
+    _on_auth_expired = fn
+
+
+def _notify_auth_expired() -> None:
+    clear_token()
+    if _on_auth_expired is not None:
+        try:
+            _on_auth_expired()
+        except Exception:
+            pass
+
+
+def token_expired(token: str, skew: float = 30.0) -> bool:
+    """서명은 서버가 검증한다. 여기서는 만료 시각(exp)만 읽어 미리 다시 로그인시킨다.
+
+    실측(2026-10-04): 토큰 파일이 있기만 하면 로그인으로 쳐서, 12시간 뒤 모든 요청이
+    401 '토큰이 만료되었습니다' 로 막히고 앱은 서버가 끊긴 것처럼 보였다.
+    """
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        exp = json.loads(base64.urlsafe_b64decode(payload)).get("exp")
+    except (IndexError, ValueError, TypeError):
+        return False   # JWT 가 아니면 서버 판단에 맡긴다
+    return exp is not None and float(exp) <= time.time() + skew
 
 
 def _headers(extra: Optional[dict] = None) -> dict:
     headers = dict(extra or {})
     token = _load_token()
+    if token and token_expired(token):
+        _notify_auth_expired()
+        token = None
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
@@ -55,6 +98,9 @@ def _handle_request(method, endpoint, **kwargs):
     except requests.exceptions.Timeout:
         return {"error": "서버 응답 시간이 초과되었습니다."}
     except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401:
+            _notify_auth_expired()
+            return {"error": AUTH_EXPIRED_MESSAGE, "auth_expired": True}
         try:
             return {"error": e.response.json()}
         except Exception:
@@ -63,7 +109,45 @@ def _handle_request(method, endpoint, **kwargs):
         return {"error": f"서버에 연결할 수 없습니다: {e}"}
 
 
+def _server_detail(response) -> str:
+    """서버 오류 본문에서 사람이 읽을 문장. 형식: {"error": {"detail": ...}} 또는 {"detail": ...}."""
+    try:
+        body = response.json()
+    except Exception:
+        return ""
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict) and isinstance(err.get("detail"), str):
+            return err["detail"]
+        if isinstance(body.get("detail"), str):
+            return body["detail"]
+    return ""
+
+
+def _auth_error(exc: Exception, action: str) -> str:
+    """로그인·계정 생성 실패를 사용자가 할 일로 바꾼다. 'requests' 예외 문구를 그대로 보여주지 않는다."""
+    if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
+        code = exc.response.status_code
+        if code == 401:
+            return "아이디 또는 비밀번호가 올바르지 않습니다. 정보를 확인해 주세요."
+        if code == 429:
+            return f"{action} 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요."
+        if code == 422:
+            return "아이디와 비밀번호를 입력해 주세요."
+        detail = _server_detail(exc.response)
+        if detail and code < 500:
+            return detail
+        return f"{action}에 실패했습니다 (서버 오류 {code}). 잠시 후 다시 시도해 주세요."
+    if isinstance(exc, requests.exceptions.Timeout):
+        return "서버 응답이 늦습니다. 잠시 후 다시 시도해 주세요."
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return "서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요."
+    return f"{action}에 실패했습니다. 잠시 후 다시 시도해 주세요."
+
+
 def login(username: str, password: str) -> dict:
+    if not username or not password:
+        return {"error": "아이디와 비밀번호를 입력해 주세요."}
     try:
         response = requests.post(
             f"{BASE_URL}/auth/login",
@@ -76,7 +160,7 @@ def login(username: str, password: str) -> dict:
             save_token(payload["access_token"])
         return payload
     except requests.exceptions.RequestException as e:
-        return {"error": f"로그인 실패: {e}"}
+        return {"error": _auth_error(e, "로그인")}
 
 
 def bootstrap_status() -> dict:
@@ -97,13 +181,8 @@ def bootstrap_first_admin(username: str, password: str) -> dict:
         if "access_token" in payload:
             save_token(payload["access_token"])
         return payload
-    except requests.exceptions.HTTPError as e:
-        try:
-            return {"error": e.response.json()}
-        except Exception:
-            return {"error": f"HTTP {e.response.status_code}"}
     except requests.exceptions.RequestException as e:
-        return {"error": f"부트스트랩 실패: {e}"}
+        return {"error": _auth_error(e, "계정 생성")}
 
 
 def server_health() -> dict:
@@ -111,7 +190,11 @@ def server_health() -> dict:
 
 
 def is_logged_in() -> bool:
-    return _load_token() is not None
+    token = _load_token()
+    if token and token_expired(token):
+        clear_token()
+        return False
+    return token is not None
 
 
 def logout() -> dict:
@@ -263,3 +346,18 @@ def newsdesk_get_style(portfolio: str):
 
 def newsdesk_state(portfolio: str):
     return _handle_request("get", "/newsdesk/state" + _portfolio_query(portfolio))
+
+
+# ---------- 증권사 연동 (모의계좌 → 실계좌) ----------
+
+def broker_state(portfolio: str) -> dict:
+    return _handle_request("get", "/autopilot/broker", params={"portfolio": portfolio})
+
+
+def set_broker(portfolio: str, name: Optional[str]) -> dict:
+    """연동 켜기/끄기. 켜면 서버가 항상 '주문 기록만'(dry_run)으로 시작한다."""
+    return _handle_request("put", "/autopilot/broker", json={"portfolio": portfolio, "name": name})
+
+
+def check_broker(portfolio: str, name: Optional[str] = None) -> dict:
+    return _handle_request("post", "/autopilot/broker/check", json={"portfolio": portfolio, "name": name})

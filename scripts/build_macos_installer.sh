@@ -24,15 +24,28 @@ echo "════════════════════════�
 echo " Alpha macOS .dmg 빌더 (v${VERSION})"
 echo "════════════════════════════════════════"
 
-# 이전 실행에서 마운트가 남아있으면 create-dmg가 실패하므로 미리 정리
+# 이전 실행에서 마운트가 남아있으면 create-dmg가 실패하므로 미리 정리.
+# 이 저장소 dist/ 의 이미지만 뗀다. 다른 곳의 Alpha .dmg 는 건드리지 않는다 — 그 안에서
+# 앱이 실행 중일 수 있다. 실측(2026-10-04): 모든 Alpha-*.dmg 를 강제로 떼어내 다른 폴더의
+# v3.5.0 .dmg 에서 실행 중이던 앱이 SIGBUS 로 죽었다.
 detach_stale_volumes() {
-  hdiutil info 2>/dev/null | awk '
-    /^image-path/ { path=$0 }
-    /^\/dev\/disk/ {
-      if (path ~ /Alpha-.*macOS\.dmg/ || path ~ /rw\..*Alpha/) print $1
+  local dist_dir
+  dist_dir="$(cd dist 2>/dev/null && pwd -P)" || return 0
+  hdiutil info 2>/dev/null | awk -v dist="$dist_dir/" '
+    /^image-path/ { sub(/^image-path[ \t]*:[ \t]*/, ""); path=$0 }
+    /^\/dev\/disk[0-9]+[ \t]/ {
+      if (index(path, dist) == 1 && path ~ /rw\..*\.dmg$/) print "temp", $1
+      else if (index(path, dist) == 1 && path ~ /Alpha-.*macOS\.dmg$/) print "final", $1
     }
-  ' | while read -r dev; do
-    [ -n "$dev" ] && hdiutil detach "$dev" -force 2>/dev/null || true
+  ' | sort -u | while read -r kind dev; do
+    [ -n "$dev" ] || continue
+    hdiutil detach "$dev" 2>/dev/null && continue
+    if [ "$kind" = "temp" ]; then
+      hdiutil detach "$dev" -force 2>/dev/null || true   # create-dmg 작업용 이미지 — 아무도 쓰지 않는다
+    else
+      # 완성된 .dmg 에서 앱이 실행 중이다. 강제로 떼면 그 앱이 죽는다.
+      echo "⚠️ $dev 를 쓰는 앱이 있어 그대로 둡니다. 앱을 종료한 뒤 다시 빌드하세요."
+    fi
   done
   rm -f dist/rw.*.dmg 2>/dev/null || true
 }

@@ -2,15 +2,19 @@
 
 - LoginDialog: 사용자명/비밀번호 입력 → 토큰 저장
 - ApiKeyDialog: 거래소별 키 입력 → 서버에 암호화 저장
+- ApiConnectDialog: 로그인 직후 "어떤 API 를 붙이면 뭘 할 수 있는지" 안내 + 바로 등록
 - StrategyChatTab: 자연어 채팅 → 전략 등록/조회
 """
 from __future__ import annotations
 
+import json
+import os
 from typing import Optional
 
 import requests
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QFormLayout,
@@ -51,10 +55,114 @@ BROKER_FIELDS = {
         ("account_no", "Account No (예: 12345678-01)", False),
         ("account_product_code", "Account Product Code (default 01)", False),
     ],
+    "kb": [
+        ("app_key", "App Key (KB증권 홈페이지 > 고객서비스 > Open API)", False),
+        ("app_secret", "App Secret", True),
+    ],
     "anthropic": [
         ("api_key", "Anthropic API Key (자연어 파싱용)", True),
     ],
 }
+
+
+# 화면에 보일 이름과 연결하면 생기는 기능. 키(내부 이름)는 서버 vault 의 broker 이름이다.
+API_SERVICES = [
+    ("kb", "KB증권", "모의계좌 매매를 실계좌로 연동 (처음엔 주문 기록만)"),
+    ("anthropic", "Claude (Anthropic)", "전략 채팅에서 자유로운 문장도 전략으로 해석"),
+    ("kis", "한국투자증권", "국내 주식 주문 (전략 채팅 자동매매)"),
+    ("alpaca", "Alpaca", "미국 주식 주문 (모의/실전)"),
+    ("upbit", "업비트", "코인 주문"),
+    ("binance", "바이낸스", "코인 주문"),
+]
+API_LABELS = {key: label for key, label, _ in API_SERVICES}
+PREFS_FILE = os.path.expanduser("~/AlphaModels/.client_prefs.json")
+
+
+def _load_prefs() -> dict:
+    try:
+        with open(PREFS_FILE, encoding="utf-8") as f:
+            raw = json.load(f)
+        return raw if isinstance(raw, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_prefs(prefs: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(PREFS_FILE), exist_ok=True)
+        with open(PREFS_FILE, "w", encoding="utf-8") as f:
+            json.dump(prefs, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def registered_apis() -> set[str] | None:
+    """등록된 API 이름. 서버에 못 물으면 None."""
+    result = core._handle_request("get", "/credentials")
+    if not isinstance(result, dict) or "error" in result:
+        return None
+    return {str(e.get("broker")) for e in result.get("brokers", []) or []}
+
+
+def maybe_prompt_api_connect(parent=None) -> None:
+    """로그인 직후 한 번. 연결할 게 남아 있고 '다시 묻지 않기'를 안 골랐을 때만."""
+    if _load_prefs().get("skip_api_prompt"):
+        return
+    done = registered_apis()
+    if done is None or {"kb", "anthropic"} <= done:
+        return
+    ApiConnectDialog(parent, registered=done).exec()
+
+
+class ApiConnectDialog(QDialog):
+    def __init__(self, parent=None, registered: set[str] | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("API 연결")
+        self.setMinimumWidth(560)
+        layout = QVBoxLayout(self)
+        intro = QLabel("API 키를 연결하면 아래 기능을 쓸 수 있습니다. 키는 이 컴퓨터에 암호화해 저장됩니다.\n"
+                       "지금 안 해도 나중에 [계정 → API 키 관리]에서 연결할 수 있습니다.")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        self.status_labels: dict[str, QLabel] = {}
+        form = QFormLayout()
+        for key, label, what in API_SERVICES[:2]:   # 이 앱의 핵심 기능에 쓰이는 둘
+            row = QHBoxLayout()
+            status = QLabel()
+            self.status_labels[key] = status
+            row.addWidget(status)
+            desc = QLabel(what)
+            desc.setWordWrap(True)
+            row.addWidget(desc, 1)
+            btn = QPushButton("연결하기")
+            btn.clicked.connect(lambda _=False, k=key: self._connect(k))
+            row.addWidget(btn)
+            form.addRow(label, row)
+        layout.addLayout(form)
+        more = QPushButton("다른 거래소 키도 관리…")
+        more.clicked.connect(lambda: self._connect(None))
+        layout.addWidget(more)
+        self.skip = QCheckBox("다음부터 묻지 않기")
+        layout.addWidget(self.skip)
+        close = QPushButton("나중에")
+        close.clicked.connect(self.accept)
+        layout.addWidget(close)
+        self._render(registered or set())
+
+    def _render(self, registered: set[str]) -> None:
+        for key, label in self.status_labels.items():
+            label.setText("✅ 연결됨" if key in registered else "⚪ 미연결")
+
+    def _connect(self, key: str | None) -> None:
+        ApiKeyDialog(self, broker=key).exec()
+        self._render(registered_apis() or set())
+
+    def accept(self) -> None:
+        if self.skip.isChecked():
+            prefs = _load_prefs()
+            prefs["skip_api_prompt"] = True
+            _save_prefs(prefs)
+        super().accept()
 
 
 # ---------- Login ----------
@@ -107,15 +215,20 @@ class LoginDialog(QDialog):
                 "계정이 생성되고 로그인되었습니다." if self._bootstrap else "로그인되었습니다.",
             )
             self.accept()
+            parent = self.parentWidget()
+            QTimer.singleShot(0, lambda: maybe_prompt_api_connect(parent))
         else:
-            QMessageBox.warning(self, "실패", str(result.get("error") or result))
+            title = "계정 생성 실패" if self._bootstrap else "로그인 실패"
+            QMessageBox.warning(self, title, str(result.get("error") or "잠시 후 다시 시도해 주세요."))
+            self.password.clear()
+            self.password.setFocus()
 
 
 # ---------- API Key Dialog ----------
 class ApiKeyDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, broker: str | None = None):
         super().__init__(parent)
-        self.setWindowTitle("거래소 API 키 등록")
+        self.setWindowTitle("API 키 등록")
         self.setMinimumWidth(520)
         self._field_widgets: dict[str, QLineEdit] = {}
 
@@ -123,8 +236,11 @@ class ApiKeyDialog(QDialog):
         top = QHBoxLayout()
         top.addWidget(QLabel("거래소"))
         self.broker_box = QComboBox()
-        self.broker_box.addItems(list(BROKER_FIELDS.keys()))
-        self.broker_box.currentTextChanged.connect(self._render_fields)
+        for key in BROKER_FIELDS:
+            self.broker_box.addItem(API_LABELS.get(key, key), key)
+        if broker and self.broker_box.findData(broker) >= 0:
+            self.broker_box.setCurrentIndex(self.broker_box.findData(broker))
+        self.broker_box.currentIndexChanged.connect(lambda _i: self._render_fields(self.broker_box.currentData()))
         top.addWidget(self.broker_box)
         layout.addLayout(top)
 
@@ -150,7 +266,7 @@ class ApiKeyDialog(QDialog):
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
 
-        self._render_fields(self.broker_box.currentText())
+        self._render_fields(self.broker_box.currentData())
         self._refresh_list()
 
     def _render_fields(self, broker: str):
@@ -166,7 +282,7 @@ class ApiKeyDialog(QDialog):
             self._field_widgets[key] = edit
 
     def _save(self):
-        broker = self.broker_box.currentText()
+        broker = self.broker_box.currentData()
         fields = {k: w.text().strip() for k, w in self._field_widgets.items()}
         fields = {k: v for k, v in fields.items() if v}
         if not fields:
@@ -176,11 +292,14 @@ class ApiKeyDialog(QDialog):
             "post", "/credentials", json={"broker": broker, "fields": fields}
         )
         if "error" in result:
-            QMessageBox.warning(self, "실패", str(result["error"]))
+            err = result["error"]
+            if isinstance(err, dict):
+                err = err.get("detail") or err
+            QMessageBox.warning(self, "저장 실패", str(err))
             return
         QMessageBox.information(
             self, "저장 완료",
-            f"{broker} 키 등록됨 (fingerprint: {result.get('fingerprint','-')})",
+            f"{API_LABELS.get(broker, broker)} 키 등록됨 (fingerprint: {result.get('fingerprint','-')})",
         )
         for w in self._field_widgets.values():
             w.clear()
@@ -191,7 +310,7 @@ class ApiKeyDialog(QDialog):
         result = core._handle_request("get", "/credentials")
         for entry in result.get("brokers", []) or []:
             preview = ", ".join(f"{k}={v}" for k, v in entry.get("fields_preview", {}).items())
-            item = QListWidgetItem(f"{entry['broker']} | {preview}")
+            item = QListWidgetItem(f"{API_LABELS.get(entry['broker'], entry['broker'])} | {preview}")
             item.setData(Qt.UserRole, entry["broker"])
             self.registered_list.addItem(item)
 
@@ -295,7 +414,10 @@ class StrategyChatTab(QWidget):
             return
         result = core._handle_request("post", "/strategies", json={"text": text})
         if "error" in result:
-            QMessageBox.warning(self, "실패", str(result["error"]))
+            err = result["error"]
+            if isinstance(err, dict):
+                err = err.get("detail") or err
+            QMessageBox.warning(self, "저장 실패", str(err))
             return
         QMessageBox.information(self, "등록 완료", f"전략 '{result.get('name')}' 등록됨")
         self.chat_input.clear()
