@@ -463,3 +463,43 @@ def test_token_error_shows_kb_message():
     with pytest.raises(KbApiError, match="앱키로 앱정보 추출 중 오류가 발생했습니다. \\(E021\\)"):
         kb._access_token()
     assert "E021" in kb.get_portfolio()["error"]
+
+
+@pytest.mark.parametrize("status,body,expected", [
+    (401, {"error": {"code": "http_401", "detail": "자격 증명이 올바르지 않습니다."}}, "정보를 확인해 주세요"),
+    (429, {}, "잠시 후 다시"),
+    (500, {}, "서버 오류 500"),
+    (400, {"error": {"detail": "비밀번호는 8자 이상"}}, "비밀번호는 8자 이상"),
+])
+def test_login_errors_are_human_readable(monkeypatch, tmp_path, status, body, expected):
+    import requests
+
+    from alpha import core
+
+    monkeypatch.setattr(core, "TOKEN_FILE", str(tmp_path / "tok"))
+
+    class R:
+        status_code = status
+
+        def raise_for_status(self):
+            raise requests.exceptions.HTTPError(response=self)
+
+        def json(self):
+            return body
+
+    monkeypatch.setattr(core.requests, "post", lambda *a, **k: R())
+    msg = core.login("hyunho", "wrong-pass")["error"]
+    assert expected in msg and "Client Error" not in msg and "http://" not in msg
+
+
+def test_login_connection_error_and_empty_fields(monkeypatch):
+    import requests
+
+    from alpha import core
+
+    def down(*a, **k):
+        raise requests.exceptions.ConnectionError("Max retries exceeded with url: http://127.0.0.1:8000")
+
+    monkeypatch.setattr(core.requests, "post", down)
+    assert core.login("hyunho", "x" * 8)["error"] == "서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요."
+    assert core.login("", "")["error"] == "아이디와 비밀번호를 입력해 주세요."

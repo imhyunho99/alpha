@@ -109,7 +109,45 @@ def _handle_request(method, endpoint, **kwargs):
         return {"error": f"서버에 연결할 수 없습니다: {e}"}
 
 
+def _server_detail(response) -> str:
+    """서버 오류 본문에서 사람이 읽을 문장. 형식: {"error": {"detail": ...}} 또는 {"detail": ...}."""
+    try:
+        body = response.json()
+    except Exception:
+        return ""
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict) and isinstance(err.get("detail"), str):
+            return err["detail"]
+        if isinstance(body.get("detail"), str):
+            return body["detail"]
+    return ""
+
+
+def _auth_error(exc: Exception, action: str) -> str:
+    """로그인·계정 생성 실패를 사용자가 할 일로 바꾼다. 'requests' 예외 문구를 그대로 보여주지 않는다."""
+    if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
+        code = exc.response.status_code
+        if code == 401:
+            return "아이디 또는 비밀번호가 올바르지 않습니다. 정보를 확인해 주세요."
+        if code == 429:
+            return f"{action} 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요."
+        if code == 422:
+            return "아이디와 비밀번호를 입력해 주세요."
+        detail = _server_detail(exc.response)
+        if detail and code < 500:
+            return detail
+        return f"{action}에 실패했습니다 (서버 오류 {code}). 잠시 후 다시 시도해 주세요."
+    if isinstance(exc, requests.exceptions.Timeout):
+        return "서버 응답이 늦습니다. 잠시 후 다시 시도해 주세요."
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return "서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요."
+    return f"{action}에 실패했습니다. 잠시 후 다시 시도해 주세요."
+
+
 def login(username: str, password: str) -> dict:
+    if not username or not password:
+        return {"error": "아이디와 비밀번호를 입력해 주세요."}
     try:
         response = requests.post(
             f"{BASE_URL}/auth/login",
@@ -122,7 +160,7 @@ def login(username: str, password: str) -> dict:
             save_token(payload["access_token"])
         return payload
     except requests.exceptions.RequestException as e:
-        return {"error": f"로그인 실패: {e}"}
+        return {"error": _auth_error(e, "로그인")}
 
 
 def bootstrap_status() -> dict:
@@ -143,13 +181,8 @@ def bootstrap_first_admin(username: str, password: str) -> dict:
         if "access_token" in payload:
             save_token(payload["access_token"])
         return payload
-    except requests.exceptions.HTTPError as e:
-        try:
-            return {"error": e.response.json()}
-        except Exception:
-            return {"error": f"HTTP {e.response.status_code}"}
     except requests.exceptions.RequestException as e:
-        return {"error": f"부트스트랩 실패: {e}"}
+        return {"error": _auth_error(e, "계정 생성")}
 
 
 def server_health() -> dict:

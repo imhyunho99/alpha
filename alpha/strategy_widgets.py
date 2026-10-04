@@ -112,7 +112,10 @@ class LoginDialog(QDialog):
             )
             self.accept()
         else:
-            QMessageBox.warning(self, "실패", str(result.get("error") or result))
+            title = "계정 생성 실패" if self._bootstrap else "로그인 실패"
+            QMessageBox.warning(self, title, str(result.get("error") or "잠시 후 다시 시도해 주세요."))
+            self.password.clear()
+            self.password.setFocus()
 
 
 # ---------- API Key Dialog ----------
