@@ -32,9 +32,16 @@ class WorkerThread(QThread):
             self.error.emit(str(e))
 
 class AlphaGUI(QMainWindow):
+    # core 가 작업 스레드에서 토큰 만료를 알릴 수 있다. 시그널로 GUI 스레드에 넘긴다.
+    auth_expired = Signal()
+
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Alpha AI 투자 에이전트 (v3.1)")
+        # 버전은 릴리즈 태그가 정한다. 제목에 박아 두면 낡는다(v3.5 에서도 v3.1 로 보였다).
+        self.setWindowTitle("Alpha AI 투자 에이전트")
+        self._login_prompt_open = False
+        self.auth_expired.connect(self._on_auth_expired)
+        core.set_auth_expired_handler(self.auth_expired.emit)
         self.setGeometry(100, 100, 1100, 800)
 
         self.portfolio_path = None
@@ -121,6 +128,23 @@ class AlphaGUI(QMainWindow):
         account.addAction(logout_act)
         account.addSeparator()
         account.addAction(keys_act)
+
+    def _on_auth_expired(self):
+        """토큰이 만료되면 한 번만 로그인 창을 띄운다(여러 탭이 동시에 401 을 받는다)."""
+        if self._login_prompt_open:
+            return
+        self._login_prompt_open = True
+        try:
+            self.statusBar().showMessage("🔑 로그인이 만료되었습니다. 다시 로그인해 주세요.")
+            if LoginDialog(self).exec() == QDialog.Accepted:
+                self.statusBar().showMessage("다시 로그인됨", 3000)
+                current = self.tabs.currentWidget()
+                for name in ("_on_refresh_clicked", "_refresh_state"):
+                    if hasattr(current, name):
+                        getattr(current, name)()
+                        break
+        finally:
+            self._login_prompt_open = False
 
     def _open_login(self):
         if LoginDialog(self).exec() == QDialog.Accepted:
