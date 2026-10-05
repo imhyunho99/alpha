@@ -47,7 +47,9 @@ class FakeKb:
                  "byng_amt": "3000000", "val_pl": "-300000"},
                 {"is_cd": "A035720", "is_nm": "카카오", "hld_q": "20", "val_amt": "700000",
                  "byng_amt": "1000000", "val_pl": "-300000"},
-            ]})
+                {"clsf": "외화증권", "crncy_cd": "USD", "is_cd": "NVDA", "is_nm": "엔비디아", "hld_q": "10",
+                 "val_amt": "2500000", "byng_amt": "1500000", "val_pl": "1000000"},
+            ], "fcrncy_tfnd_krw_exch_amt": "100000", "nt_asts_val_amt": "8000000"})
         if api == "spqm2226":
             return _ok({"Record1": [{"tfnd_val_amt": "100000"}], "Record2": [
                 {"is_cd": "NVDA", "is_nm": "엔비디아", "frgn_hld_q_p6": "10.000000", "krw_val_amt": "2500000",
@@ -83,7 +85,7 @@ def isolate(monkeypatch, tmp_path):
 
 def _kb():
     fake = FakeKb()
-    return KbBroker("k", "s", dry_run=True, session=fake), fake
+    return KbBroker("k", "s", dry_run=True, session=fake, suffix_fn=lambda c: ".KS"), fake
 
 
 def test_overview_reads_balance_history_and_never_orders():
@@ -110,14 +112,23 @@ def test_findings_flag_concentration_losses_trend_and_news():
          "cost_krw": 2_500_000, "pl_krw": -1_000_000},
     ]}
     stats = {"035720.KS": {"above_200d": False, "drawdown_pct": -42.0, "vol_pct": 40.0}}
-    news = [Interpretation(item_id="1", ticker="035720.KS", sentiment=-0.8, confidence=0.9, category="legal",
-                           published_at=NOW - timedelta(days=1), model="t", title="카카오 소송", url="u")]
+    def it(i, ticker, sent, title):
+        return Interpretation(item_id=str(i), ticker=ticker, sentiment=sent, confidence=0.9, category="legal",
+                              published_at=NOW - timedelta(days=1), model="t", title=title, url="u")
+
+    # 카카오: 부정 우세(평균 -0.5) → 경고. 삼성전자: 강한 악재가 있어도 평균은 긍정 → 경고 없이 목록만
+    news = ([it(i, "035720.KS", -0.8 if i < 4 else 0.7, f"카카오 소송 {i}") for i in range(6)]
+            + [it(i + 10, "005930.KS", -0.9 if i == 0 else 0.8, f"삼성 기사 {i}") for i in range(10)])
     out = M.analyze(snap, stats, [], [], news)
     text = " ".join(f["text"] for f in out["findings"])
     assert "삼성전자 한 종목이 계좌의 50%" in text
     assert "카카오: 매입가 대비 -40%" in text
     assert "200일 평균선 아래" in text and "1년 고점 대비 -42%" in text
-    assert "악재 기사 1건" in text and out["bad_news"][0]["title"] == "카카오 소송"
+    assert "카카오: 최근 7일 기사 6건의 평균 감성이 -0.30" in text
+    assert "삼성전자: 최근 7일" not in text
+    kakao = [r for r in out["bad_news"] if r["name"] == "카카오"]
+    assert len(kakao) == 3                                    # 종목당 가장 부정적인 3건
+    assert any(r["name"] == "삼성전자" for r in out["bad_news"])
 
 
 def test_price_stats_trend_and_drawdown():
@@ -149,7 +160,7 @@ def test_kb_error_is_reported_not_raised():
                 return _Resp({"dataHeader": {"processCode": "E021", "processMessage": "앱키 오류"}}, 500)
             return super().post(url, json, headers, timeout)
 
-    kb = KbBroker("k", "s", session=Down())
+    kb = KbBroker("k", "s", session=Down(), suffix_fn=lambda c: ".KS")
     out = M.overview("kim", "kb", broker=kb, now=NOW)
     assert out["registered"] and "E021" in out["error"]
 
@@ -201,3 +212,106 @@ def test_my_account_tab_renders_both_states(monkeypatch):
     assert "총 평가 8,000,000원" in tab.summary.text()
     assert tab.holdings.rowCount() == 3 and tab.trades.rowCount() == 2
     assert tab.findings.count() >= 1
+
+
+# ---------- 실계좌 리밸런싱 (기록만) ----------
+
+@pytest.fixture
+def ap_dir(monkeypatch, tmp_path):
+    from alpha_server.autopilot import store as ap_store
+
+    monkeypatch.setattr(ap_store, "STATE_DIR", str(tmp_path / "autopilot"))
+    return ap_store
+
+
+def test_seed_shadow_copies_account_at_current_prices(ap_dir):
+    from alpha_server.newsdesk import store as nd_store
+
+    nd_store.save_style("kim", "news", __import__("alpha_server.newsdesk.models", fromlist=["StyleProfile"])
+                        .StyleProfile(focus_tickers=["NVDA", "AMD"], raw_text="반도체"))
+    ap_dir.save_config("kim", {"temperature": 5, "capital": 1e7, "active": True, "mode": "news"}, "news")
+    kb, fake = _kb()
+    status = M.seed_shadow("kim", "kb", broker=kb, now=NOW)
+    assert status["exists"] and status["active"] and status["dry_run"] is True
+
+    cfg = ap_dir.load_config("kim", M.SHADOW_PORTFOLIO)
+    assert cfg["mode"] == "news" and cfg["shadow_of"] == "kb" and cfg["broker"] == {"name": "kb", "dry_run": True}
+    account, _ = ap_dir.load_account("kim", M.SHADOW_PORTFOLIO)
+    sam = account.positions["005930.KS"]
+    assert sam.quantity == 10 and sam.avg_price == pytest.approx(270_000)   # 매입가(30만원)가 아니라 지금 가격
+    assert account.cash == pytest.approx(2_100_000)
+    style = nd_store.load_style("kim", M.SHADOW_PORTFOLIO)
+    assert style.raw_text == "반도체"
+    assert {"NVDA", "AMD", "005930.KS", "035720.KS"} <= set(style.focus_tickers)
+    assert not [c for c in fake.calls if c.startswith(("ssam", "skam"))]
+
+    M.stop_shadow("kim")
+    assert ap_dir.load_config("kim", M.SHADOW_PORTFOLIO)["active"] is False
+
+
+def test_shadow_first_step_does_not_stop_out_inherited_losers(ap_dir):
+    """10/5 실측 재현: 매입가로 복제하면 -7% 손절선 아래 종목을 첫 실행에 전부 팔았다."""
+    from alpha_server.autopilot.journal import Journal
+    from alpha_server.autopilot.temperature import profile_for
+    from alpha_server.newsdesk import store as nd_store
+    from alpha_server.newsdesk import weights as W
+    from alpha_server.newsdesk.engine import news_step
+    from alpha_server.newsdesk.signals import PARAMS_LIVE
+
+    kb, _ = _kb()
+    M.seed_shadow("kim", "kb", broker=kb, now=NOW)
+    account, _ = ap_dir.load_account("kim", M.SHADOW_PORTFOLIO)
+    style = nd_store.load_style("kim", M.SHADOW_PORTFOLIO)
+    prices = {"005930.KS": 270_000.0, "035720.KS": 35_000.0, "NVDA": 250_000.0}
+
+    class P:
+        def get_many(self, tickers, at):
+            return {t: prices[t] for t in tickers if t in prices}
+
+    r = news_step(account, profile_for(5), style, W.WeightState(trust={}, pending=[], peak_equity=0, history=[]),
+                  [], P(), NOW, Journal(mirror_audit=False), watch=list(prices), params=PARAMS_LIVE, tilts={})
+    assert not [d for d in r.decisions if d["action"] == "exit"]
+
+
+def test_shadow_api(monkeypatch, ap_dir):
+    from cryptography.fernet import Fernet
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("ALPHA_JWT_SECRET", "test-secret-do-not-use-in-prod")
+    monkeypatch.setenv("ALPHA_VAULT_KEY", Fernet.generate_key().decode())
+    from importlib import reload
+
+    from alpha_server import audit_log, auth, credentials
+    reload(audit_log)
+    reload(auth)
+    reload(credentials)
+    from alpha_server.main import app
+    from alpha_server.newsdesk import runner
+
+    started = []
+    monkeypatch.setattr(runner, "start", lambda u, p: started.append((u, p)))
+    monkeypatch.setattr(runner, "stop", lambda u=None, p=None: None)
+    client = TestClient(app)
+    client.post("/auth/bootstrap", json={"username": "kim", "password": "StrongPass1!"})
+    tok = client.post("/auth/login", data={"username": "kim", "password": "StrongPass1!"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {tok}"}
+    assert client.get("/account/shadow", headers=h).json()["exists"] is False
+    r = client.post("/account/shadow", json={"broker": "kb"}, headers=h)
+    assert r.status_code == 400 and "키" in r.json()["error"]["detail"]          # 키 없음
+    assert client.post("/account/shadow", json={"temperature": 9}, headers=h).status_code == 422   # 레버리지 온도 거부
+
+    kb, _ = _kb()
+    monkeypatch.setattr("alpha_server.brokers.build_broker_for_user", lambda *a, **k: kb)
+    r = client.post("/account/shadow", json={"broker": "kb"}, headers=h)
+    assert r.status_code == 200 and r.json()["dry_run"] is True and started == [("kim", M.SHADOW_PORTFOLIO)]
+    assert client.delete("/account/shadow", headers=h).json()["active"] is False
+
+
+def test_shadow_text():
+    from alpha.myaccount_widgets import shadow_text
+
+    assert "시작 전" in shadow_text({"exists": False})
+    t = shadow_text({"exists": True, "active": True, "dry_run": True, "temperature": 5,
+                     "last_sync": {"at": "2026-10-05T08:00:00", "orders": 7, "status": "ok", "message": ""}})
+    assert "주문 기록만" in t and "주문 7건" in t
+    assert "🔴" in shadow_text({"exists": True, "active": True, "dry_run": False, "temperature": 5})

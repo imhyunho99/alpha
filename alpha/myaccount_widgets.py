@@ -59,6 +59,31 @@ def summary_text(data: dict) -> str:
     return " · ".join(parts)
 
 
+def shadow_text(data) -> str:
+    if not isinstance(data, dict) or "error" in data:
+        err = data.get("error") if isinstance(data, dict) else data
+        if isinstance(err, dict):
+            err = err.get("detail") or err
+        return f"⚠️ {err}"
+    if not data.get("exists"):
+        return "아직 시작 전입니다. 시작하면 에이전트가 이 계좌를 기준으로 리밸런싱 계획을 세웁니다."
+    state = "운용 중" if data.get("active") else "멈춤"
+    mode = "🔴 실주문" if not data.get("dry_run", True) else "주문 기록만"
+    parts = [f"{state} · {mode} · 온도 {data.get('temperature')}",
+             f"시작 {str(data.get('seeded_at') or '')[:16].replace('T', ' ')}"]
+    last = data.get("last_sync") or {}
+    if last:
+        if last.get("status") == "error":
+            parts.append(f"마지막 계산 실패: {last.get('message', '')}")
+        else:
+            parts.append(f"마지막 계산 {str(last.get('at', ''))[5:16].replace('T', ' ')} · 주문 {last.get('orders', 0)}건"
+                         + (f" · {last['message']}" if last.get("message") else ""))
+    else:
+        parts.append("첫 계산은 몇 분 안에 됩니다 (뉴스 루프 3분 주기)")
+    parts.append("에이전트 판단 상세: 📰 뉴스 탭 → 'my-kb' 포트폴리오")
+    return " · ".join(parts)
+
+
 def habits_text(h: dict) -> str:
     if not h or not h.get("sells"):
         return "최근 1년 매도 기록이 없습니다."
@@ -117,6 +142,25 @@ class MyAccountTab(QWidget):
         self.findings.setMaximumHeight(150)
         layout.addWidget(self.findings)
 
+        # 자동 리밸런싱 — 실계좌를 복제한 포트폴리오를 에이전트가 굴리고, 실계좌에 필요한 주문을 기록만 한다
+        self.shadow_box = QGroupBox("자동 리밸런싱 (주문 기록만 — 실제 주문은 나가지 않습니다)")
+        sb = QVBoxLayout(self.shadow_box)
+        srow = QHBoxLayout()
+        self.shadow_start = QPushButton("내 계좌로 에이전트 시작")
+        self.shadow_start.clicked.connect(self._on_shadow_start)
+        srow.addWidget(self.shadow_start)
+        self.shadow_stop = QPushButton("멈추기")
+        self.shadow_stop.clicked.connect(self._on_shadow_stop)
+        srow.addWidget(self.shadow_stop)
+        self.shadow_label = QLabel("")
+        self.shadow_label.setWordWrap(True)
+        srow.addWidget(self.shadow_label, 1)
+        sb.addLayout(srow)
+        self.shadow_orders = _make_table(["시각", "종목", "주문", "수량", "금액", "결과"])
+        self.shadow_orders.setMaximumHeight(140)
+        sb.addWidget(self.shadow_orders)
+        layout.addWidget(self.shadow_box)
+
         split = QSplitter(Qt.Vertical)
         holdings_box = QWidget()
         hb = QVBoxLayout(holdings_box)
@@ -164,6 +208,44 @@ class MyAccountTab(QWidget):
         worker.finished.connect(lambda w=worker: self._workers.remove(w) if w in self._workers else None)
         worker.start()
 
+    # --- 자동 리밸런싱 ---
+
+    def _run(self, fn, callback, *args):
+        worker = _Worker(fn, *args)
+        self._workers.append(worker)
+        worker.done.connect(callback)
+        worker.finished.connect(lambda w=worker: self._workers.remove(w) if w in self._workers else None)
+        worker.start()
+
+    def _on_shadow_start(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        if QMessageBox.question(
+            self, "에이전트 시작",
+            "지금 KB 계좌의 보유 종목·현금을 복제한 포트폴리오를 에이전트가 굴립니다.\n"
+            "실계좌에 필요한 주문은 '기록만' 하고 실제로 보내지 않습니다.\n"
+            "이미 시작했다면 지금 잔고로 다시 맞춥니다. 진행할까요?",
+        ) != QMessageBox.Yes:
+            return
+        self.shadow_label.setText("시작하는 중…")
+        self._run(core.start_account_shadow, self._on_shadow)
+
+    def _on_shadow_stop(self):
+        self._run(core.stop_account_shadow, self._on_shadow)
+
+    def _on_shadow(self, data):
+        self.shadow_label.setText(shadow_text(data))
+        exists = isinstance(data, dict) and data.get("exists")
+        self.shadow_start.setText("지금 잔고로 다시 맞추기" if exists else "내 계좌로 에이전트 시작")
+        self.shadow_stop.setEnabled(bool(exists and data.get("active")))
+        _fill(self.shadow_orders, [
+            [str(o.get("at", ""))[5:16].replace("T", " "), str(o.get("ticker", "")),
+             "매수" if o.get("action") == "buy" else "매도", f"{_num(o.get('quantity')):g}",
+             won(o.get("amount_krw")),
+             {"success": "기록됨", "risk_blocked": "위험 한도로 보류"}.get(o.get("status"), f"실패: {o.get('message', '')}")]
+            for o in _rows((data or {}).get("orders") if isinstance(data, dict) else [])
+        ])
+
     def _open_keys(self):
         from alpha.strategy_widgets import ApiKeyDialog
 
@@ -191,6 +273,7 @@ class MyAccountTab(QWidget):
         if data.get("error"):
             self.status.setText(f"⚠️ KB증권 연결 실패: {data['error']}")
             return
+        self._run(core.account_shadow, self._on_shadow)
         self.status.setText("✅ 불러옴 (조회 전용)"
                             + (f" · 매매 기록 일부 실패: {data['history_error']}" if data.get("history_error") else ""))
         self.summary.setText(summary_text(data))

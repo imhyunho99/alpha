@@ -39,8 +39,11 @@ class FakeKb:
         self.tokens = 0
         self.expire_next = False
         self.us = {"NVDA": ("NAS", "180.5000", "251000.00"), "JPM": ("NYS", "300.0000", "417000.00")}
+        # 실측 형식(10/5): 통합 잔고에 해외 종목도 '외화증권'·USD 로, 원화 평가액으로 함께 온다
         self.domestic = [{"is_cd": "A005930", "hld_q": "000000000000003", "byng_avr_prc": "270000",
-                          "val_amt": "000000000810000"}]
+                          "val_amt": "000000000810000"},
+                         {"clsf": "외화증권", "crncy_cd": "USD", "is_cd": "NVDA", "hld_q": "0",
+                          "hld_q_p6": "0.500000", "val_amt": "125500"}]
         self.overseas = [{"is_cd": "NVDA        ", "frgn_hld_q_p6": "0.500000", "byng_avr_prc_p4": "170.0000",
                           "krw_val_amt": "125500"}]
 
@@ -65,7 +68,8 @@ class FakeKb:
         if api in ("ssam1801", "ssam1802", "skam2101", "skam2201"):
             return _Resp(200, _ok({"ordr_no": "0040000638", "o_msg": "정상적으로 주문 완료되었습니다."}))
         if api == "ssqm2952":
-            return _Resp(200, _ok({"dy_tfnd": "000000001000000", "Record1": self.domestic}))
+            return _Resp(200, _ok({"dy_tfnd": "000000001000000", "fcrncy_tfnd_krw_exch_amt": "139000",
+                                   "nt_asts_val_amt": "2074500", "Record1": self.domestic}))
         if api == "spqm2226":
             return _Resp(200, _ok({"Record1": [{"tfnd_val_amt": "139000"}], "Record2": self.overseas}))
         return _Resp(404, {"error": api})
@@ -73,7 +77,7 @@ class FakeKb:
 
 def _kb(dry_run=True):
     fake = FakeKb()
-    return KbBroker("app-key", "app-secret", dry_run=dry_run, session=fake), fake
+    return KbBroker("app-key", "app-secret", dry_run=dry_run, session=fake, suffix_fn=lambda c: ".KS"), fake
 
 
 # ---------- 어댑터 ----------
@@ -459,7 +463,7 @@ def test_token_error_shows_kb_message():
                                               "processMessage": "앱키로 앱정보 추출 중 오류가 발생했습니다."},
                                "dataBody": {"access_token": "", "token_type": "", "expires_in": 0}})
 
-    kb = KbBroker("bad", "bad", session=Bad())
+    kb = KbBroker("bad", "bad", session=Bad(), suffix_fn=lambda c: ".KS")
     with pytest.raises(KbApiError, match="앱키로 앱정보 추출 중 오류가 발생했습니다. \\(E021\\)"):
         kb._access_token()
     assert "E021" in kb.get_portfolio()["error"]

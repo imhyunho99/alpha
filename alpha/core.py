@@ -371,3 +371,16 @@ def check_broker(portfolio: str, name: Optional[str] = None) -> dict:
 def account_overview(broker: str = "kb", days: int = 365) -> dict:
     """잔고·손익·분석·매매 기록. 증권사 조회와 시세 분석이 겹쳐 오래 걸릴 수 있다."""
     return _handle_request("get", "/account/overview", params={"broker": broker, "days": days}, timeout=60)
+
+
+def account_shadow() -> dict:
+    return _handle_request("get", "/account/shadow")
+
+
+def start_account_shadow(temperature: int = 5) -> dict:
+    """실계좌 잔고로 에이전트를 시작하거나 다시 맞춘다. 주문은 기록만."""
+    return _handle_request("post", "/account/shadow", json={"broker": "kb", "temperature": temperature}, timeout=60)
+
+
+def stop_account_shadow() -> dict:
+    return _handle_request("delete", "/account/shadow")
