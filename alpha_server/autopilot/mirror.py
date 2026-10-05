@@ -134,6 +134,18 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
                 price_krw[p["ticker"]] = float(p["value_krw"]) / float(p["quantity"])
         rm = RiskManager(broker=broker)
         orders = plan(weights, real, price_krw, rm.config.max_position_pct)
+        # 기록만 할 때는 실계좌가 안 바뀌니 다음 계산도 같은 주문이 나온다. 실측(10/5): 6분 사이 같은
+        # 14건이 두 번 쌓였다. 계획이 지난번과 같으면 다시 기록하지 않는다. 시세가 조금 움직이면 수량이
+        # 미세하게 달라지므로 종목·방향이 같으면 같은 계획으로 본다.
+        signature = sorted([o["ticker"], o["action"]] for o in orders)
+        if opts["dry_run"] and orders and signature == state.get("last_plan"):
+            summary.update(orders=0, real_equity=round(float(real.get("total_value") or 0)),
+                           message="계획 변경 없음 (지난 기록과 같음)")
+            state["last_sync_at"] = now.isoformat()
+            state["last"] = summary
+            _save_state(username, portfolio, state)
+            return summary
+        state["last_plan"] = signature
         done = []
         for o in orders:
             if o["action"] == "buy":
