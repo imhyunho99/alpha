@@ -573,3 +573,19 @@ def test_autopilot_tab_retries_portfolio_list(monkeypatch):
     assert len(scheduled) == 1                     # 로그인 만료면 재시도 대신 로그인 후 다시 부른다
     tab._on_portfolios({"portfolios": [{"portfolio": "balanced-factor", "temperature": 5, "mode": "model"}]})
     assert tab.known_portfolios() == ["balanced-factor"]
+
+
+def test_dry_run_does_not_record_the_same_plan_twice(mirror_env):
+    mirror, _ = mirror_env
+    acct, prices = _paper()
+    broker = FakeBroker(total=10_000_000)
+    cfg = {"broker": {"name": "kb", "dry_run": True}}
+    first = mirror.sync("kim", "news", cfg, acct, prices, NOW, broker=broker)
+    second = mirror.sync("kim", "news", cfg, acct, prices, NOW + timedelta(minutes=3), broker=broker)
+    assert first["orders"] == 2 and second["orders"] == 0 and "변경 없음" in second["message"]
+    assert len(mirror.load_state("kim", "news")["orders"]) == 2
+    moved = {**prices, "NVDA": 252_000.0}                    # 시세가 조금 움직여도 같은 계획
+    assert mirror.sync("kim", "news", cfg, acct, moved, NOW + timedelta(minutes=6), broker=broker)["orders"] == 0
+    acct.sell("005930.KS", acct.positions["005930.KS"].quantity, prices["005930.KS"])   # 종목이 바뀌면 다시 기록
+    third = mirror.sync("kim", "news", cfg, acct, prices, NOW + timedelta(minutes=9), broker=broker)
+    assert third["orders"] >= 1
