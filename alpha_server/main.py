@@ -78,8 +78,10 @@ from .autopilot.api import router as autopilot_router  # noqa: E402
 app.include_router(autopilot_router)
 
 from .newsdesk.api import router as newsdesk_router  # noqa: E402
+from .myaccount_api import router as myaccount_router  # noqa: E402
 
 app.include_router(newsdesk_router)
+app.include_router(myaccount_router)
 
 
 # --- 인증 엔드포인트 ---

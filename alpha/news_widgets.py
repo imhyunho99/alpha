@@ -151,8 +151,8 @@ def _fill(table: QTableWidget, rows: list[list[str]]) -> None:
             table.setItem(r, c, QTableWidgetItem(text))
 
 
-PORTFOLIO_RETRY_MAX = 5
-PORTFOLIO_RETRY_MS = 4000
+PORTFOLIO_RETRY_MAX = 12   # 서버가 막 켜졌을 때(밀린 운용 재생·모델 로딩) 1~2분 느리다
+PORTFOLIO_RETRY_MS = 6000
 
 
 class NewsTab(QWidget):

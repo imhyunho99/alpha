@@ -251,9 +251,13 @@ class KbBroker(BaseBroker):
                 continue
             positions.append({
                 "ticker": f"{kr_code(str(row.get('is_cd', '')).strip())}.KS",
+                "name": str(row.get("is_nm", "")).strip(),
+                "currency": "KRW",
                 "quantity": qty,
                 "avg_price": num(row.get("byng_avr_prc")),
                 "value_krw": num(row.get("val_amt")),
+                "cost_krw": num(row.get("byng_amt")),
+                "pl_krw": num(row.get("val_pl")),
             })
         for row in ovs.get("Record2") or []:
             qty = num(row.get("frgn_hld_q_p6"))
@@ -261,15 +265,66 @@ class KbBroker(BaseBroker):
                 continue
             positions.append({
                 "ticker": str(row.get("is_cd", "")).strip().upper(),
+                "name": str(row.get("is_nm", "")).strip(),
+                "currency": str(row.get("crncy_clsf_nm", "")).strip() or "USD",
                 "quantity": qty,
                 "avg_price": num(row.get("byng_avr_prc_p4")),   # 달러
                 "value_krw": num(row.get("krw_val_amt")),
+                "cost_krw": num(row.get("krw_exch_byng_amt")),
+                "pl_krw": num(row.get("krw_exch_val_pl")),
             })
         cash = num(dom.get("dy_tfnd"))
         usd_cash_krw = sum(num(r.get("tfnd_val_amt")) for r in ovs.get("Record1") or [])
         total = cash + usd_cash_krw + sum(p["value_krw"] for p in positions)
         return {"broker": "kb", "currency": "KRW", "cash": cash, "foreign_cash_krw": usd_cash_krw,
                 "positions": positions, "total_value": total}
+
+    # ---- 기록 (조회 전용) ----
+    def _paged(self, api: str, body: dict, record: str = "Record1", max_pages: int = 20) -> list[dict]:
+        """nxt_key 로 이어지는 조회를 끝까지(최대 max_pages) 모은다."""
+        rows: list[dict] = []
+        key = ""
+        for _ in range(max_pages):
+            out = self._post(api, {**body, "nxt_key": key})
+            rows.extend(out.get(record) or [])
+            key = str(out.get("nxt_key") or "").strip()
+            if not key:
+                break
+        return rows
+
+    def realized_trades(self, start: str, end: str) -> list[dict]:
+        """국내 주식 매매별 실현손익(SSQM2442). start/end 는 YYYYMMDD."""
+        out = []
+        for r in self._paged("SSQM2442", {"inq_strt_dt": start, "inq_end_dt": end}):
+            code = str(r.get("shrt_is_cd") or r.get("stnd_is_cd") or "").strip()
+            out.append({
+                "date": str(r.get("trd_dt", "")).strip(),
+                "ticker": f"{kr_code(code)}.KS" if code else "",
+                "name": str(r.get("is_nm", "")).strip(),
+                "side": "sell" if str(r.get("trd_dl_ccd", "")).strip() in ("01", "1") else "buy",
+                "quantity": num(r.get("ccls_q")),
+                "price": num(r.get("ccls_uprc")),
+                "buy_price": num(r.get("b_uprc")),
+                "amount": num(r.get("s_amt")) or num(r.get("b_amt")),
+                "fee": num(r.get("fee")) + num(r.get("svrl_tx")),
+                "realized_pl": num(r.get("rlztn_pl")),
+                "return_pct": num(r.get("yld")),
+                "market": "KR",
+            })
+        return out
+
+    def overseas_daily_pl(self, start: str, end: str) -> list[dict]:
+        """해외 주식 주문일별 매매손익(SPQM2207, 원화 기준)."""
+        out = []
+        for r in self._paged("SPQM2207", {"strt_ordr_dt": start, "end_ordr_dt": end,
+                                          "std_crncy_f": "2", "exch_r_aplc_f": "2"}, record="Record2"):
+            out.append({
+                "date": str(r.get("ordr_dt", "")).strip(),
+                "market": str(r.get("mkt_clsf_nm", "")).strip() or "해외",
+                "realized_pl": num(r.get("fcrncy_trd_pl_sum_p2")),
+                "fee": num(r.get("b_svcst1_p2")) + num(r.get("s_svcst1_p2")) + num(r.get("frgn_dl_tx_p4")),
+            })
+        return out
 
     def get_position(self, ticker: str) -> Optional[Position]:
         key = f"{kr_code(ticker)}.KS" if is_korean(ticker) else ticker.upper()
