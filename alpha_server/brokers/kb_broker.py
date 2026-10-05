@@ -65,6 +65,51 @@ class KbApiError(RuntimeError):
     pass
 
 
+_MARKET_CACHE: dict[str, str] = {}
+
+
+def _market_cache_path() -> str:
+    import os
+
+    return os.path.join(os.path.expanduser("~"), "AlphaModels", "kr_market_suffix.json")
+
+
+def kr_suffix(code: str) -> str:
+    """6자리 코드 → '.KS'(코스피) | '.KQ'(코스닥). KB 잔고는 시장을 알려주지 않는다.
+
+    실측(2026-10-05): 셀바스AI(108860, 코스닥)를 .KS 로 붙여 시세를 못 찾았고, 엔진은 보유 종목
+    시세가 빠지면 그날 매매를 건너뛰어 리밸런싱이 통째로 멈췄다. 야후에 한 번 물어 파일에 기억한다.
+    """
+    import json
+    import os
+
+    if not _MARKET_CACHE:
+        try:
+            with open(_market_cache_path(), encoding="utf-8") as f:
+                _MARKET_CACHE.update(json.load(f))
+        except (OSError, ValueError):
+            pass
+    if code in _MARKET_CACHE:
+        return _MARKET_CACHE[code]
+    suffix = ".KS"
+    try:
+        import yfinance as yf
+
+        if yf.Ticker(f"{code}.KS").history(period="5d").empty and \
+                not yf.Ticker(f"{code}.KQ").history(period="5d").empty:
+            suffix = ".KQ"
+    except Exception:
+        return suffix   # 판별 실패는 기억하지 않는다
+    _MARKET_CACHE[code] = suffix
+    try:
+        os.makedirs(os.path.dirname(_market_cache_path()), exist_ok=True)
+        with open(_market_cache_path(), "w", encoding="utf-8") as f:
+            json.dump(_MARKET_CACHE, f)
+    except OSError:
+        pass
+    return suffix
+
+
 def _kb_message(data) -> str:
     """KB 오류 응답에서 사람이 읽을 문장. processMessage 가 가장 구체적이다."""
     head = data.get("dataHeader", {}) if isinstance(data, dict) else {}
@@ -75,7 +120,8 @@ def _kb_message(data) -> str:
 
 class KbBroker(BaseBroker):
     def __init__(self, app_key: str, app_secret: str, dry_run: bool = True,
-                 base_url: str = KB_BASE, session: Optional[requests.Session] = None) -> None:
+                 base_url: str = KB_BASE, session: Optional[requests.Session] = None,
+                 suffix_fn=None) -> None:
         self.app_key = app_key
         self.app_secret = app_secret
         self.dry_run = dry_run
@@ -84,6 +130,7 @@ class KbBroker(BaseBroker):
         self._token: Optional[str] = None
         self._token_exp = 0.0
         self._exchange: dict[str, str] = {}
+        self._suffix = suffix_fn or kr_suffix
         self.ip, self.mac = _local_addr()
 
     # ---- 통신 ----
@@ -238,45 +285,40 @@ class KbBroker(BaseBroker):
 
     # ---- 잔고 ----
     def get_portfolio(self) -> dict:
-        """원화 기준 잔고. positions 의 value_krw 는 KB 가 평가한 원화 금액."""
+        """원화 기준 잔고. 통합 잔고(SSQM2952) 하나를 기준으로 한다.
+
+        실측(2026-10-05, 실계좌): SSQM2952 의 Record1 에 국내 주식과 해외 주식(clsf '외화증권',
+        crncy_cd 'USD')이 함께, 원화 평가액으로 온다. 해외 잔고(SPQM2226)를 또 더하면 해외 종목이
+        두 번 잡힌다(알파벳 187만원 이중 계산). 순자산(nt_asts_val_amt) = 평가금액 합 + 예수금 +
+        외화예수금 원화환산 으로 KB 화면과 맞는다.
+        """
         try:
             dom = self._post("SSQM2952", {"excg_mktpr_ccd": "A"})
-            ovs = self._post("SPQM2226", {"std_crncy_f": "2", "exch_r_aplc_f": "2"})
         except (KbApiError, requests.RequestException) as e:
             return {"broker": "kb", "error": str(e)}
         positions = []
         for row in dom.get("Record1") or []:
-            qty = num(row.get("hld_q"))
+            qty = num(row.get("hld_q_p6")) or num(row.get("hld_q"))
             if qty <= 0:
                 continue
+            code = str(row.get("is_cd", "")).strip()
+            currency = str(row.get("crncy_cd", "")).strip() or "KRW"
+            foreign = currency != "KRW" or "외화" in str(row.get("clsf", ""))
+            value = num(row.get("val_amt"))
             positions.append({
-                "ticker": f"{kr_code(str(row.get('is_cd', '')).strip())}.KS",
+                "ticker": code.upper() if foreign else f"{kr_code(code)}{self._suffix(kr_code(code))}",
                 "name": str(row.get("is_nm", "")).strip(),
-                "currency": "KRW",
+                "currency": currency if foreign else "KRW",
                 "quantity": qty,
                 "avg_price": num(row.get("byng_avr_prc")),
-                "value_krw": num(row.get("val_amt")),
+                "value_krw": value,
                 "cost_krw": num(row.get("byng_amt")),
                 "pl_krw": num(row.get("val_pl")),
             })
-        for row in ovs.get("Record2") or []:
-            qty = num(row.get("frgn_hld_q_p6"))
-            if qty <= 0:
-                continue
-            positions.append({
-                "ticker": str(row.get("is_cd", "")).strip().upper(),
-                "name": str(row.get("is_nm", "")).strip(),
-                "currency": str(row.get("crncy_clsf_nm", "")).strip() or "USD",
-                "quantity": qty,
-                "avg_price": num(row.get("byng_avr_prc_p4")),   # 달러
-                "value_krw": num(row.get("krw_val_amt")),
-                "cost_krw": num(row.get("krw_exch_byng_amt")),
-                "pl_krw": num(row.get("krw_exch_val_pl")),
-            })
         cash = num(dom.get("dy_tfnd"))
-        usd_cash_krw = sum(num(r.get("tfnd_val_amt")) for r in ovs.get("Record1") or [])
-        total = cash + usd_cash_krw + sum(p["value_krw"] for p in positions)
-        return {"broker": "kb", "currency": "KRW", "cash": cash, "foreign_cash_krw": usd_cash_krw,
+        foreign_cash = num(dom.get("fcrncy_tfnd_krw_exch_amt"))
+        total = num(dom.get("nt_asts_val_amt")) or (cash + foreign_cash + sum(p["value_krw"] for p in positions))
+        return {"broker": "kb", "currency": "KRW", "cash": cash, "foreign_cash_krw": foreign_cash,
                 "positions": positions, "total_value": total}
 
     # ---- 기록 (조회 전용) ----
@@ -299,7 +341,7 @@ class KbBroker(BaseBroker):
             code = str(r.get("shrt_is_cd") or r.get("stnd_is_cd") or "").strip()
             out.append({
                 "date": str(r.get("trd_dt", "")).strip(),
-                "ticker": f"{kr_code(code)}.KS" if code else "",
+                "ticker": f"{kr_code(code)}{self._suffix(kr_code(code))}" if code else "",
                 "name": str(r.get("is_nm", "")).strip(),
                 "side": "sell" if str(r.get("trd_dl_ccd", "")).strip() in ("01", "1") else "buy",
                 "quantity": num(r.get("ccls_q")),
@@ -327,7 +369,7 @@ class KbBroker(BaseBroker):
         return out
 
     def get_position(self, ticker: str) -> Optional[Position]:
-        key = f"{kr_code(ticker)}.KS" if is_korean(ticker) else ticker.upper()
+        key = f"{kr_code(ticker)}{self._suffix(kr_code(ticker))}" if is_korean(ticker) else ticker.upper()
         for p in self.get_portfolio().get("positions", []):
             if p["ticker"] == key:
                 return Position(ticker=ticker, quantity=p["quantity"], avg_price=p["avg_price"])

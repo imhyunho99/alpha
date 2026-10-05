@@ -1,0 +1,6 @@
+#!/bin/sh
+# scripts/install_git_hooks.sh 로 설치. 실제 API 키가 커밋에 들어가는 것을 막는다.
+ROOT="$(git rev-parse --show-toplevel)"
+PY="$ROOT/venv/bin/python"
+[ -x "$PY" ] || PY=python3
+exec "$PY" "$ROOT/scripts/check_secrets.py"

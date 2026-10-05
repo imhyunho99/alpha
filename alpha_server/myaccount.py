@@ -27,6 +27,11 @@ SINGLE_NAME_WARN = 20.0      # 한 종목이 계좌의 20% 넘으면
 TOP3_WARN = 60.0             # 상위 3종목이 60% 넘으면
 LOSS_WARN = -20.0            # 매입가 대비 -20% 이하
 DRAWDOWN_WARN = 30.0         # 52주 고점 대비 -30% 이하
+BAD_NEWS_SENTIMENT = -0.6    # 뉴스 데스크의 '규칙 매도'(-0.3)보다 엄격하게 — 알림은 드물어야 읽힌다
+BAD_NEWS_CONFIDENCE = 0.7
+BAD_NEWS_PER_TICKER = 3      # 목록에는 종목별로 가장 부정적인 기사 몇 건만
+BAD_NEWS_AVG = -0.15         # 7일 평균 감성이 이 이하일 때만 '부정 우세' 알림
+BAD_NEWS_MIN_ITEMS = 5
 
 _lock = threading.Lock()
 _cache: dict[tuple, tuple[float, dict]] = {}
@@ -196,17 +201,33 @@ def analyze(snap: dict, stats: dict[str, dict], trades: list[dict], overseas: li
         add("warn", f"수수료·세금 {habits['fees_and_tax']:,}원이 실현손익 {habits['realized_pl']:+,}원의 30%를 넘습니다. "
                     "매매가 잦습니다.")
 
+    # 악재 알림. 기사 수가 많은 대형주는 강한 부정 기사도 늘 많다(실측 10/5: 삼성전자 7일 1,329건 중
+    # 강한 부정 109건인데 평균 감성은 +0.43). 건수가 아니라 평균이 부정으로 기울었을 때만 알린다.
     news_rows = []
     held = {h["ticker"]: h["name"] for h in holdings}
+    by_ticker: dict[str, list] = {}
     for item in news or []:
-        if item.ticker in held and item.sentiment <= -0.3:
-            news_rows.append({"ticker": item.ticker, "name": held[item.ticker], "title": item.title,
-                              "url": item.url, "sentiment": round(item.sentiment, 2),
-                              "at": item.published_at.isoformat()})
-    news_rows.sort(key=lambda r: r["at"], reverse=True)
-    for name in sorted({r["name"] for r in news_rows}):
-        n = sum(1 for r in news_rows if r["name"] == name)
-        add("info", f"{name}: 최근 7일 악재 기사 {n}건 (아래 목록).")
+        if item.ticker in held:
+            by_ticker.setdefault(item.ticker, []).append(item)
+    for ticker, items in by_ticker.items():
+        avg = sum(i.sentiment for i in items) / len(items)
+        seen_titles: set[str] = set()
+        worst = []
+        for item in sorted(items, key=lambda i: i.sentiment):
+            key = " ".join((item.title or "").split())[:40].lower()
+            if item.sentiment > BAD_NEWS_SENTIMENT or item.confidence < BAD_NEWS_CONFIDENCE or key in seen_titles:
+                continue
+            seen_titles.add(key)
+            worst.append(item)
+            if len(worst) >= BAD_NEWS_PER_TICKER:
+                break
+        for item in worst:
+            news_rows.append({"ticker": ticker, "name": held[ticker], "title": item.title, "url": item.url,
+                              "sentiment": round(item.sentiment, 2), "at": item.published_at.isoformat()})
+        if len(items) >= BAD_NEWS_MIN_ITEMS and avg <= BAD_NEWS_AVG:
+            add("warn", f"{held[ticker]}: 최근 7일 기사 {len(items)}건의 평균 감성이 {avg:+.2f}로 부정 쪽입니다 "
+                        "(가장 부정적인 기사는 아래 목록).")
+    news_rows.sort(key=lambda r: r["sentiment"])
 
     return {"summary": summary, "holdings": holdings, "habits": habits,
             "findings": findings, "bad_news": news_rows[:20]}
@@ -316,3 +337,96 @@ def clean_for_json(obj):
     if isinstance(obj, list):
         return [clean_for_json(v) for v in obj]
     return obj
+
+
+# ---------- 실계좌 리밸런싱 (기록만) ----------
+# 실계좌를 그대로 복제한 모의 포트폴리오를 뉴스 데스크 에이전트가 굴리고, 그 비중을 실계좌에 맞추는
+# 주문을 증권사 연동(mirror)이 '기록만' 한다. 실주문 전환은 /autopilot/broker/live 의 확인 문구로만.
+
+SHADOW_PORTFOLIO = "my-kb"
+SHADOW_TEMPERATURE = 5
+
+
+def shadow_status(username: str, portfolio: str = SHADOW_PORTFOLIO) -> dict:
+    from .autopilot import mirror
+    from .autopilot import store as ap_store
+
+    cfg = ap_store.load_config(username, portfolio)
+    if not cfg.get("shadow_of"):
+        return {"exists": False, "portfolio": portfolio}
+    state = mirror.load_state(username, portfolio)
+    opts = mirror.settings(cfg) or {}
+    return {"exists": True, "portfolio": portfolio, "active": bool(cfg.get("active")),
+            "temperature": cfg.get("temperature"), "seeded_at": cfg.get("seeded_at"),
+            "dry_run": opts.get("dry_run", True), "last_sync": state.get("last"),
+            "orders": list(reversed(state.get("orders", [])[-40:]))}
+
+
+def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADOW_TEMPERATURE,
+                portfolio: str = SHADOW_PORTFOLIO, broker=None, now: Optional[datetime] = None) -> dict:
+    """실계좌 잔고로 모의 포트폴리오를 만들거나 다시 맞춘다. 주문은 하지 않는다.
+
+    시작가(avg_price)는 매입가가 아니라 지금 가격이다. 손절·익절·손실 브레이크는 에이전트가 계좌를
+    넘겨받은 시점부터 잰다. 실측(10/5): 매입가를 쓰면 보유 4종목이 모두 -7% 손절선 아래라 첫 실행에
+    전부 팔았다 — 과거의 매수 판단까지 에이전트가 책임지는 꼴이다.
+    """
+    from .autopilot import store as ap_store
+    from .autopilot.account import PaperAccount, Position
+    from .newsdesk import store as nd_store
+    from .newsdesk.models import StyleProfile
+    from .newsdesk.weights import WeightState
+
+    now = now or datetime.now(timezone.utc)
+    if broker is None:
+        from .brokers import build_broker_for_user
+
+        broker = build_broker_for_user(username, broker_name, dry_run=True)
+    snap = broker.get_portfolio()
+    if snap.get("error"):
+        raise RuntimeError(snap["error"])
+
+    account = PaperAccount(cash=float(snap.get("cash") or 0) + float(snap.get("foreign_cash_krw") or 0))
+    for p in snap.get("positions", []):
+        if p["quantity"] > 0 and p.get("value_krw"):
+            account.positions[p["ticker"]] = Position(p["ticker"], float(p["quantity"]),
+                                                      float(p["value_krw"]) / float(p["quantity"]))
+    total = account.cash + sum(pos.quantity * pos.avg_price for pos in account.positions.values())
+
+    # 스타일: 쓰고 있는 뉴스 포트폴리오의 문장을 그대로 쓰고, 지금 보유 종목은 관심 종목에 더한다
+    # (안 그러면 '관심 종목 아님'으로 첫날 전부 판다).
+    base = None
+    for name in ap_store.list_portfolios(username):
+        if ap_store.load_config(username, name).get("mode") == "news" and name != portfolio:
+            base = nd_store.load_style(username, name)
+            break
+    style = base or StyleProfile()
+    style.focus_tickers = list(dict.fromkeys(style.focus_tickers + list(account.positions)))
+    style.notes = list(style.notes) + [f"실계좌 보유 종목을 관심 종목에 포함: {', '.join(account.positions)}"]
+
+    with ap_store.portfolio_lock(username, portfolio):
+        ap_store.save_config(username, {
+            "temperature": int(temperature), "capital": round(total), "active": True, "horizon": "medium",
+            "mode": "news", "portfolio": portfolio, "shadow_of": broker_name, "seeded_at": now.isoformat(),
+            "broker": {"name": broker_name, "dry_run": True},
+        }, portfolio)
+        ap_store.save_account(username, account, None, portfolio, last_tracked_at=now)
+        nd_store.save_style(username, portfolio, style)
+        nd_store.save_weights(username, portfolio,
+                              WeightState(trust={}, pending=[], peak_equity=total, history=[]))
+        nd_store.save_tilts(username, portfolio, {})
+
+    from . import audit_log
+
+    audit_log.record("config", "shadow_seeded", actor=username, portfolio=portfolio, broker=broker_name,
+                     holdings=len(account.positions), dry_run=True)
+    return shadow_status(username, portfolio)
+
+
+def stop_shadow(username: str, portfolio: str = SHADOW_PORTFOLIO) -> dict:
+    from .autopilot import store as ap_store
+
+    cfg = ap_store.load_config(username, portfolio)
+    if cfg.get("shadow_of"):
+        cfg["active"] = False
+        ap_store.save_config(username, cfg, portfolio)
+    return shadow_status(username, portfolio)
