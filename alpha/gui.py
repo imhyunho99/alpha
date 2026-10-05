@@ -10,6 +10,7 @@ from PySide6.QtGui import QFont, QAction
 
 from alpha import core
 from alpha.autopilot_widgets import AutopilotTab
+from alpha.myaccount_widgets import MyAccountTab
 from alpha.news_widgets import NewsTab
 from alpha.strategy_widgets import (
     ApiConnectDialog, ApiKeyDialog, LoginDialog, StrategyChatTab, registered_apis,
@@ -74,6 +75,10 @@ class AlphaGUI(QMainWindow):
         # 탭 3: 뉴스 기반 모의 자동매매
         self.news_tab = NewsTab()
         self.tabs.addTab(self.news_tab, "📰 뉴스 자동매매")
+
+        # 탭: 내 실계좌 (조회 전용)
+        self.myaccount_tab = MyAccountTab()
+        self.tabs.addTab(self.myaccount_tab, "💼 내 계좌")
 
         # 탭 4: 전략 채팅
         self.strategy_tab = StrategyChatTab()

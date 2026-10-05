@@ -89,9 +89,10 @@ def _headers(extra: Optional[dict] = None) -> dict:
 def _handle_request(method, endpoint, **kwargs):
     """서버 요청을 처리하는 내부 헬퍼."""
     headers = _headers(kwargs.pop("headers", None))
+    timeout = kwargs.pop("timeout", 10)
     try:
         response = requests.request(
-            method, f"{BASE_URL}{endpoint}", timeout=10, headers=headers, **kwargs
+            method, f"{BASE_URL}{endpoint}", timeout=timeout, headers=headers, **kwargs
         )
         response.raise_for_status()
         return response.json()
@@ -276,7 +277,9 @@ def _portfolio_query(portfolio: str, **extra) -> str:
 
 
 def autopilot_portfolios():
-    return _handle_request("get", "/autopilot/portfolios")
+    # 계좌마다 실시간 시세로 평가액을 매긴다. 평소 4초, 서버가 막 켜졌을 땐 14초(실측 10/5).
+    # 10초에 끊으면 서버 재시작 직후 목록이 안 뜬다.
+    return _handle_request("get", "/autopilot/portfolios", timeout=30)
 
 
 def autopilot_get_config(portfolio: str = DEFAULT_PORTFOLIO):
@@ -361,3 +364,10 @@ def set_broker(portfolio: str, name: Optional[str]) -> dict:
 
 def check_broker(portfolio: str, name: Optional[str] = None) -> dict:
     return _handle_request("post", "/autopilot/broker/check", json={"portfolio": portfolio, "name": name})
+
+
+# ---------- 내 실계좌 (조회 전용) ----------
+
+def account_overview(broker: str = "kb", days: int = 365) -> dict:
+    """잔고·손익·분석·매매 기록. 증권사 조회와 시세 분석이 겹쳐 오래 걸릴 수 있다."""
+    return _handle_request("get", "/account/overview", params={"broker": broker, "days": days}, timeout=60)

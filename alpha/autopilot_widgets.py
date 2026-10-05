@@ -94,8 +94,8 @@ class EquityCurve(QWidget):
 
 # 앱 시작 때 탭들이 한꺼번에 서버를 두드리면 목록 요청(혼자서도 약 4초)이 10초 제한에 걸린다.
 # 실측(2026-10-04 E2E): 한 번 실패로 끝나 목록이 'default' 하나로 굳었다. 뉴스 탭과 같이 다시 시도한다.
-PORTFOLIO_RETRY_MAX = 5
-PORTFOLIO_RETRY_MS = 4000
+PORTFOLIO_RETRY_MAX = 12   # 서버가 막 켜졌을 때(밀린 운용 재생·모델 로딩) 1~2분 느리다
+PORTFOLIO_RETRY_MS = 6000
 
 
 class AutopilotTab(QWidget):

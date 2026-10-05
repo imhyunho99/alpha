@@ -115,6 +115,14 @@ def watch_list(keys: list[Key]) -> list[str]:
         account, _ = ap_store.load_account(*k)
         for t in list(account.positions) if account else []:
             seen.setdefault(t, None)
+    # 실계좌 보유 종목도 기사를 모은다 — '내 계좌' 화면의 악재 알림이 이걸 쓴다
+    try:
+        from ..myaccount import held_tickers
+
+        for t in sorted(held_tickers()):
+            seen.setdefault(t, None)
+    except Exception:
+        pass
     held = len(seen)
     for k in keys:
         style = styles[k]
