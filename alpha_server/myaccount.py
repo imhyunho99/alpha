@@ -358,6 +358,7 @@ def shadow_status(username: str, portfolio: str = SHADOW_PORTFOLIO) -> dict:
     opts = mirror.settings(cfg) or {}
     return {"exists": True, "portfolio": portfolio, "active": bool(cfg.get("active")),
             "sleeve": bool(cfg.get("sleeve")), "baseline": cfg.get("baseline", {}),
+            "strategy": cfg.get("strategy", "news"),
             "temperature": cfg.get("temperature"), "seeded_at": cfg.get("seeded_at"),
             "dry_run": opts.get("dry_run", True), "last_sync": state.get("last"),
             "orders": list(reversed(state.get("orders", [])[-40:]))}
@@ -365,7 +366,7 @@ def shadow_status(username: str, portfolio: str = SHADOW_PORTFOLIO) -> dict:
 
 def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADOW_TEMPERATURE,
                 portfolio: str = SHADOW_PORTFOLIO, broker=None, now: Optional[datetime] = None,
-                sleeve: bool = True) -> dict:
+                sleeve: bool = True, strategy: str = "allocation") -> dict:
     """실계좌 잔고로 모의 포트폴리오를 만들거나 다시 맞춘다. 주문은 하지 않는다.
 
     sleeve=True(기본, 사용자 결정 10/9): '새 돈만' 운용. 지금 보유 종목은 기준 보유분으로 묶고 절대 팔지 않는다.
@@ -439,6 +440,8 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
             "mode": "news", "portfolio": portfolio, "shadow_of": broker_name, "seeded_at": now.isoformat(),
             "broker": {"name": broker_name, "dry_run": True},
             "sleeve": bool(sleeve), "baseline": baseline, "principal": round(principal),
+            # "allocation": 주식(SPY)/채권(IEF) 자산배분(기본, 2026-10-09 판정) | "news": 뉴스 데스크 에이전트
+            "strategy": strategy,
         }, portfolio)
         ap_store.save_account(username, account, None, portfolio, last_tracked_at=now)
         if not (sleeve and existing is not None and existing_cfg.get("sleeve")):

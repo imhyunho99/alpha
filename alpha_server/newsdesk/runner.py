@@ -201,8 +201,13 @@ def _run_portfolio_locked(user, portfolio, recent, prices, now, watch, model_fn)
     acted = {i for d in past for i in d.get("item_ids", [])}
     tilts = store.load_tilts(user, portfolio)
 
+    if cfg.get("strategy") == "allocation":
+        result = _allocation_result(account, prices, now, int(cfg["temperature"]), last_rebalance,
+                                    Journal(actor=f"{user}/{portfolio}"))
+    else:
+        result = None
     own_watch = [t for t in watch if t in set(style.focus_tickers or DEFAULT_WATCH) | set(account.positions)]
-    result = news_step(
+    result = result or news_step(
         account, profile, style, weights, recent, prices, now,
         Journal(actor=f"{user}/{portfolio}"),
         watch=own_watch,
@@ -245,6 +250,22 @@ def _run_portfolio_locked(user, portfolio, recent, prices, now, watch, model_fn)
         flush=True,
     )
     return result
+
+
+def _allocation_result(account, prices, now, temperature, last_rebalance, journal):
+    """자산배분 전략(실계좌 '새 돈만' 기본). 뉴스는 매매에 쓰지 않는다 — 알림으로만."""
+    import math
+
+    from ..autopilot.allocation import allocation_step, targets
+    from .engine import NewsStepResult
+
+    tickers = sorted(set(targets(temperature)) | set(account.positions))
+    snap = {t: p for t, p in prices.get_many(tickers, now).items()
+            if isinstance(p, (int, float)) and math.isfinite(p) and p > 0}
+    if any(t not in snap for t in tickers):
+        return NewsStepResult(now, account.equity(snap), skipped="시세 누락")
+    fills, decisions = allocation_step(account, snap, now, temperature, last_rebalance, journal)
+    return NewsStepResult(now, account.equity(snap), fills, decisions)
 
 
 def _loop() -> None:

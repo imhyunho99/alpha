@@ -18,6 +18,14 @@ from .brokers.base import BaseBroker
 STATE_FILE = os.path.expanduser("~/AlphaModels/risk_state.json")
 
 
+# 넓게 분산된 지수·채권 ETF. 여기 없는 종목은 개별 주식 상한(max_position_pct)을 받는다.
+BROAD_FUNDS = frozenset({"SPY", "VOO", "IVV", "VTI", "QQQ", "IEF", "AGG", "BND", "TLT", "SHY", "BIL", "VEA", "EFA"})
+
+
+def position_cap(ticker: str, config: "RiskConfig") -> float:
+    return config.max_fund_pct if ticker.upper() in BROAD_FUNDS else config.max_position_pct
+
+
 @dataclass
 class RiskConfig:
     max_position_pct: float = float(os.getenv("ALPHA_RISK_MAX_POSITION_PCT", "0.10"))  # 10%
@@ -25,6 +33,8 @@ class RiskConfig:
     take_profit_pct: float = float(os.getenv("ALPHA_RISK_TAKE_PROFIT_PCT", "0.15"))  # +15%
     max_daily_buys: int = int(os.getenv("ALPHA_RISK_MAX_DAILY_BUYS", "10"))
     max_daily_loss_pct: float = float(os.getenv("ALPHA_RISK_MAX_DAILY_LOSS_PCT", "0.05"))  # -5%
+    # 종목 상한 10% 는 개별 주식용. 지수·채권 ETF 는 그 자체가 분산이라 자산배분(60/40)에 맞게 따로 둔다.
+    max_fund_pct: float = float(os.getenv("ALPHA_RISK_MAX_FUND_PCT", "0.80"))
 
 
 @dataclass

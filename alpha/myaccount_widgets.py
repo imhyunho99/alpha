@@ -6,6 +6,7 @@ from datetime import datetime
 from PySide6.QtCore import QPointF, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen
 from PySide6.QtWidgets import (
+    QComboBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -87,6 +88,100 @@ class ValueChart(QWidget):
             prev = pt
 
 
+class HistoryChart(QWidget):
+    """계좌 평가액(실선) + 순입금(점선) + 매매 표시(직접=파랑, 에이전트=주황, 입출금=회색)."""
+
+    COLORS = {"manual": "#2d7dd2", "agent": "#f4a261", "flow": "#9a9a9a"}
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._series: list = []
+        self._events: list = []
+        self.setMinimumHeight(220)
+
+    def set_data(self, series, events) -> None:
+        self._series = [r for r in series or [] if len(r) >= 3]
+        self._events = list(events or [])
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        left, right, top, bottom = 84, 12, 14, 26
+        if len(self._series) < 2:
+            painter.drawText(self.rect(), Qt.AlignCenter, "[기록 불러오기]를 누르면 계좌 개설 이후 변동이 그려집니다")
+            return
+        vals = [r[1] for r in self._series] + [r[2] for r in self._series]
+        lo, hi = min(vals), max(vals)
+        pad = (hi - lo) * 0.08 or 1.0
+        lo, hi = lo - pad, hi + pad
+        n = len(self._series)
+        index = {r[0]: i for i, r in enumerate(self._series)}
+
+        def x_of(i):
+            return left + i / (n - 1) * (w - left - right)
+
+        def y_of(v):
+            return top + (hi - v) / (hi - lo) * (h - top - bottom)
+
+        painter.setPen(QPen(QColor("#888888"), 1))
+        for v in (hi - pad, (hi + lo) / 2, lo + pad):
+            painter.drawText(QPointF(4, y_of(v) + 4), f"{v:,.0f}")
+        painter.drawText(QPointF(left, h - 8), self._series[0][0])
+        painter.drawText(QPointF(w - right - 70, h - 8), self._series[-1][0])
+        if lo < 0 < hi:
+            painter.setPen(QPen(QColor("#cccccc"), 1))
+            painter.drawLine(QPointF(left, y_of(0)), QPointF(w - right, y_of(0)))
+        # 순입금(점선)
+        painter.setPen(QPen(QColor("#888888"), 1.5, Qt.DashLine))
+        for i in range(1, n):
+            painter.drawLine(QPointF(x_of(i - 1), y_of(self._series[i - 1][2])), QPointF(x_of(i), y_of(self._series[i][2])))
+        # 평가액(실선)
+        painter.setPen(QPen(QColor("#264653"), 2))
+        for i in range(1, n):
+            painter.drawLine(QPointF(x_of(i - 1), y_of(self._series[i - 1][1])), QPointF(x_of(i), y_of(self._series[i][1])))
+        # 매매·입출금 표시
+        for e in self._events:
+            i = index.get(e.get("date"))
+            if i is None:
+                continue
+            x, y = x_of(i), y_of(self._series[i][1])
+            if e.get("kind") in ("deposit", "withdraw"):
+                painter.setPen(QPen(QColor(self.COLORS["flow"]), 1))
+                painter.setBrush(QColor(self.COLORS["flow"]))
+                painter.drawEllipse(QPointF(x, h - bottom + 2), 2.5, 2.5)
+                continue
+            color = QColor(self.COLORS["agent" if e.get("who") == "agent" else "manual"])
+            painter.setPen(QPen(color, 1))
+            painter.setBrush(color)
+            dy = -7 if e.get("kind") == "buy" else 7
+            painter.drawPolygon([QPointF(x, y + dy), QPointF(x - 4, y + dy * 0.2), QPointF(x + 4, y + dy * 0.2)])
+        painter.setBrush(Qt.NoBrush)
+        legend = [("━ 평가액", "#264653"), ("┅ 넣은 돈(순입금)", "#888888"), ("▲▼ 직접 매매", self.COLORS["manual"]),
+                  ("▲▼ 에이전트", self.COLORS["agent"]), ("● 입출금", self.COLORS["flow"])]
+        x = left + 4
+        for text, col in legend:
+            painter.setPen(QPen(QColor(col), 1))
+            painter.drawText(QPointF(x, top + 10), text)
+            x += 9 * len(text) + 10
+
+
+def history_window(series: list, events: list, span: str) -> tuple[list, list]:
+    """'전체' | '1년' | '3개월' 로 자른다. 계좌가 비어 있던 앞부분(평가액·순입금 모두 0)은 뺀다."""
+    from datetime import date, timedelta
+
+    rows = [r for r in series or [] if len(r) >= 3]
+    first = next((i for i, r in enumerate(rows) if r[1] or r[2]), 0)
+    rows = rows[first:]
+    if rows and span in ("1년", "3개월"):
+        last = date.fromisoformat(rows[-1][0])
+        cut = (last - timedelta(days=365 if span == "1년" else 92)).isoformat()
+        rows = [r for r in rows if r[0] >= cut]
+    days = {r[0] for r in rows}
+    return rows, [e for e in events or [] if e.get("date") in days]
+
+
 def _label_time(iso: str) -> str:
     try:
         return datetime.fromisoformat(iso).astimezone().strftime("%m-%d %H:%M")
@@ -153,6 +248,10 @@ def shadow_text(data) -> str:
     mode = "🔴 실주문" if not data.get("dry_run", True) else "주문 기록만"
     scope = (f"새 돈만 운용 · 기존 {len(data.get('baseline') or {})}종목 보호" if data.get("sleeve")
              else "계좌 전체 운용")
+    if data.get("strategy") == "allocation":
+        t = int(data.get("temperature") or 5)
+        stock = min(100, max(20, 10 * t + 10))
+        scope += f" · 자산배분 주식(SPY) {stock}% / 채권(IEF) {100 - stock}%"
     parts = [f"{state} · {mode} · {scope} · 온도 {data.get('temperature')}",
              f"시작 {str(data.get('seeded_at') or '')[:16].replace('T', ' ')}"]
     last = data.get("last_sync") or {}
@@ -191,7 +290,17 @@ class MyAccountTab(QWidget):
         self._shadow_timer.timeout.connect(lambda: self._run(core.account_shadow, self._on_shadow))
 
     def _build(self):
-        layout = QVBoxLayout(self)
+        # 차트가 둘이라 창이 작으면 눌려 보인다 — 탭 전체를 스크롤되게
+        from PySide6.QtWidgets import QScrollArea
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
+        layout = QVBoxLayout(inner)
         top = QHBoxLayout()
         top.addWidget(QLabel("증권사: KB증권"))
         self.load_btn = QPushButton("불러오기")
@@ -219,6 +328,25 @@ class MyAccountTab(QWidget):
         g.addLayout(row)
         self.guide.hide()
         layout.addWidget(self.guide)
+
+        self.history_box = QGroupBox("계좌 변동 (계좌 개설 이후 · 직접 매매와 에이전트 매매)")
+        hb_layout = QVBoxLayout(self.history_box)
+        hrow = QHBoxLayout()
+        self.history_span = QComboBox()
+        self.history_span.addItems(["1년", "3개월", "전체"])
+        self.history_span.currentIndexChanged.connect(lambda _i: self._render_history())
+        hrow.addWidget(self.history_span)
+        self.history_btn = QPushButton("기록 불러오기")
+        self.history_btn.clicked.connect(lambda: self._load_history(refresh=True))
+        hrow.addWidget(self.history_btn)
+        self.history_label = QLabel("")
+        self.history_label.setWordWrap(True)
+        hrow.addWidget(self.history_label, 1)
+        hb_layout.addLayout(hrow)
+        self.history_chart = HistoryChart()
+        hb_layout.addWidget(self.history_chart)
+        layout.addWidget(self.history_box)
+        self._history: dict = {}
 
         self.summary = QLabel("")
         self.summary.setWordWrap(True)
@@ -292,6 +420,7 @@ class MyAccountTab(QWidget):
         right.addWidget(self.news)
         bl.addLayout(right, 1)
         split.addWidget(bottom)
+        split.setMinimumHeight(420)
         layout.addWidget(split, 1)
         self._news_urls: list[str] = []
 
@@ -303,6 +432,7 @@ class MyAccountTab(QWidget):
         if not self._loaded_once:
             self._loaded_once = True
             self.refresh()
+            self._load_history()
 
     def hideEvent(self, event):
         self._shadow_timer.stop()
@@ -316,6 +446,39 @@ class MyAccountTab(QWidget):
         worker.done.connect(self._on_data)
         worker.finished.connect(lambda w=worker: self._workers.remove(w) if w in self._workers else None)
         worker.start()
+
+    # --- 계좌 변동 기록 ---
+
+    def _load_history(self, refresh: bool = False):
+        self.history_btn.setEnabled(False)
+        self.history_label.setText("거래내역으로 계좌 변동을 다시 쌓는 중… (처음엔 1~2분)")
+        self._run(core.account_history, self._on_history, refresh)
+
+    def _on_history(self, data):
+        self.history_btn.setEnabled(True)
+        if not isinstance(data, dict) or "error" in data or not data.get("registered", True):
+            err = data.get("error") if isinstance(data, dict) else data
+            if isinstance(err, dict):
+                err = err.get("detail") or err
+            self.history_label.setText(f"기록을 불러오지 못했습니다: {err}" if err else "KB 키가 필요합니다")
+            return
+        self._history = data
+        self._render_history()
+
+    def _render_history(self):
+        data = self._history or {}
+        series, events = history_window(data.get("series"), data.get("events"), self.history_span.currentText())
+        self.history_chart.set_data(series, events)
+        if not series:
+            return
+        first, last = series[0], series[-1]
+        trades = [e for e in events if e.get("kind") in ("buy", "sell")]
+        agent = sum(1 for e in trades if e.get("who") == "agent")
+        note = (f"{first[0]} → {last[0]} · 평가액 {first[1]:,.0f} → {last[1]:,.0f}원 · 넣은 돈(순입금) {last[2]:,.0f}원 · "
+                f"매매 {len(trades)}건(직접 {len(trades) - agent} · 에이전트 {agent})")
+        if data.get("check_diff_pct") is not None:
+            note += f" · KB 잔고와 차이 {data['check_diff_pct']:+.1f}%(달러 예수금 등)"
+        self.history_label.setText(note)
 
     # --- 자동 리밸런싱 ---
 
@@ -332,6 +495,7 @@ class MyAccountTab(QWidget):
         if QMessageBox.question(
             self, "에이전트 시작",
             "에이전트가 '새 돈'(지금 예수금과 앞으로의 입금)만 운용합니다.\n"
+            "전략: 미국 주식(SPY) 60% / 미국 중기채(IEF) 40%, 매달 또는 5%p 벗어나면 리밸런싱.\n"
             "지금 보유한 종목은 기준 보유분으로 묶어 절대 팔지 않습니다.\n"
             "이미 시작했다면 에이전트 몫은 그대로 두고 기준 보유분만 지금 잔고로 다시 잡습니다. 진행할까요?",
         ) != QMessageBox.Yes:
