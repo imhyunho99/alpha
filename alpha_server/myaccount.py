@@ -397,7 +397,10 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
     existing_cfg = ap_store.load_config(username, portfolio)
     existing, _ = ap_store.load_account(username, portfolio) if existing_cfg.get("shadow_of") else (None, None)
     if sleeve and existing is not None and existing_cfg.get("sleeve"):
-        account = existing   # 다시 맞추기: 에이전트 몫은 그대로
+        account = existing   # 다시 맞추기: 에이전트 몫(보유 종목)은 그대로
+        # '새 돈만' 운용에서 계좌의 현금은 전부 에이전트 몫이다. 입금 직후 이걸 눌러 바로 반영한다
+        # (자동 감지는 다음 연동 때, 실주문 직후 3일은 보류).
+        account.cash = real_cash
         baseline = {t: q - (account.positions[t].quantity if t in account.positions else 0.0)
                     for t, q in real_qty.items()}
         baseline = {t: q for t, q in baseline.items() if q > 1e-6}
