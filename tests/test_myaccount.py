@@ -331,7 +331,10 @@ def test_sleeve_seed_keeps_existing_holdings_out(ap_dir):
 
     account.positions["NVDA"] = Position("NVDA", 2, 250_000)
     ap_dir.save_account("kim", account, None, M.SHADOW_PORTFOLIO)
+    account.cash = 100_000                                   # 에이전트가 쓴 뒤
+    ap_dir.save_account("kim", account, None, M.SHADOW_PORTFOLIO)
     status = M.seed_shadow("kim", "kb", broker=kb, now=NOW)
     assert status["baseline"]["NVDA"] == 8
     account, _ = ap_dir.load_account("kim", M.SHADOW_PORTFOLIO)
     assert account.positions["NVDA"].quantity == 2
+    assert account.cash == pytest.approx(2_100_000)           # 입금 등 계좌 현금은 다시 맞추기로 바로 반영
