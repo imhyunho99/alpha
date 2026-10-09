@@ -221,6 +221,8 @@ def _run_portfolio_locked(user, portfolio, recent, prices, now, watch, model_fn)
     if result.skipped is None:
         try:
             ap_store.record_equity(user, portfolio, now, result.equity)
+            if cfg.get("shadow_of"):
+                ap_store.record_intraday(user, portfolio, now, result.equity)
         except Exception as exc:   # 기록 실패가 매매 루프를 멈추면 안 된다
             print(f"[newsdesk {user}/{portfolio}] 잔고 기록 실패: {exc}", flush=True)
     store.append_decisions(user, portfolio, result.decisions)

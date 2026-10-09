@@ -226,6 +226,9 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
             weights = {t: p.quantity * prices[t] / equity
                        for t, p in account.positions.items() if t in prices and equity > 0}
             summary["flow"] = round(flow)
+            if cfg.get("sleeve"):
+                cfg = {**cfg, "principal": round(float(cfg.get("principal") or 0) + flow)}   # 넣은 돈 누계
+                store.save_config(username, cfg, portfolio)
             audit_log.record("trade", "broker_mirror_cash_flow", actor=f"{username}/{portfolio}", amount=round(flow))
         rm = RiskManager(broker=broker)
         view = real

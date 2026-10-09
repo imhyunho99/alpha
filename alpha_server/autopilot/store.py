@@ -186,6 +186,44 @@ def record_equity(username: str, portfolio: str, at: datetime, equity: float) ->
     os.replace(tmp, path)
 
 
+INTRADAY_KEEP = timedelta(days=7)
+INTRADAY_GAP = timedelta(minutes=15)
+
+
+def record_intraday(username: str, portfolio: str, at: datetime, equity: float) -> None:
+    """장중 평가액(15분 간격, 7일). '내 계좌' 차트가 첫날부터 움직임을 보이게."""
+    path = _path(username, "equity_intraday", portfolio)
+    try:
+        with open(path, encoding="utf-8") as f:
+            rows = json.load(f)
+        if not isinstance(rows, list):
+            rows = []
+    except (OSError, json.JSONDecodeError):
+        rows = []
+    if rows:
+        try:
+            if at - datetime.fromisoformat(rows[-1][0]) < INTRADAY_GAP:
+                return
+        except (ValueError, TypeError, IndexError):
+            rows = []
+    rows.append([at.isoformat(), round(float(equity))])
+    cutoff = at - INTRADAY_KEEP
+    rows = [r for r in rows if datetime.fromisoformat(r[0]) >= cutoff]
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(rows, f)
+    os.replace(tmp, path)
+
+
+def load_intraday(username: str, portfolio: str = DEFAULT_PORTFOLIO) -> list[list]:
+    try:
+        with open(_path(username, "equity_intraday", portfolio), encoding="utf-8") as f:
+            rows = json.load(f)
+        return rows if isinstance(rows, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
 def load_equity(username: str, portfolio: str = DEFAULT_PORTFOLIO) -> dict[str, float]:
     try:
         with open(_path(username, "equity", portfolio), encoding="utf-8") as f:

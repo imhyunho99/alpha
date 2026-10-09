@@ -28,11 +28,14 @@ class ShadowPayload(BaseModel):
     sleeve: bool = True                        # 새 돈만 운용(기존 보유 종목은 건드리지 않음)
 
 
-@router.get("/shadow", summary="실계좌 리밸런싱(기록만) 상태와 기록된 주문")
+@router.get("/shadow", summary="실계좌 에이전트 운용 상태·기록된 주문·차트 데이터")
 def get_shadow(user: UserPublic = Depends(require_user)):
     from . import myaccount
 
-    return myaccount.clean_for_json(myaccount.shadow_status(user.username))
+    status = myaccount.shadow_status(user.username)
+    if status.get("exists"):
+        status["chart"] = myaccount.shadow_chart(user.username)
+    return myaccount.clean_for_json(status)
 
 
 @router.post(

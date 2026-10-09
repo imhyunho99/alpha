@@ -338,3 +338,59 @@ def test_sleeve_seed_keeps_existing_holdings_out(ap_dir):
     account, _ = ap_dir.load_account("kim", M.SHADOW_PORTFOLIO)
     assert account.positions["NVDA"].quantity == 2
     assert account.cash == pytest.approx(2_100_000)           # 입금 등 계좌 현금은 다시 맞추기로 바로 반영
+
+
+# ---------- 차트 ----------
+
+def test_intraday_series_keeps_15min_spacing_and_7_days(ap_dir):
+    t0 = datetime(2026, 10, 9, 13, 0, tzinfo=timezone.utc)
+    for m in (0, 3, 6, 15, 31):
+        ap_dir.record_intraday("kim", "my-kb", t0 + timedelta(minutes=m), 1_000_000 + m)
+    rows = ap_dir.load_intraday("kim", "my-kb")
+    assert [r[1] for r in rows] == [1_000_000, 1_000_015, 1_000_031]
+    ap_dir.record_intraday("kim", "my-kb", t0 + timedelta(days=8), 1)
+    assert len(ap_dir.load_intraday("kim", "my-kb")) == 1
+
+
+def test_principal_and_chart_data(ap_dir, monkeypatch):
+    kb, _ = _kb()
+    M.seed_shadow("kim", "kb", broker=kb, now=NOW)                   # 새 돈만: 원금 = 예수금
+    cfg = ap_dir.load_config("kim", M.SHADOW_PORTFOLIO)
+    assert cfg["principal"] == 2_100_000
+
+    class P:
+        def get_many(self, tickers, at):
+            return {t: 260_000.0 for t in tickers}
+
+    monkeypatch.setattr("alpha_server.autopilot.prices.LivePrices", lambda: P())
+    from alpha_server.autopilot.account import Position
+    account, _ = ap_dir.load_account("kim", M.SHADOW_PORTFOLIO)
+    account.cash -= 500_000
+    account.positions["NVDA"] = Position("NVDA", 2, 250_000)
+    ap_dir.save_account("kim", account, None, M.SHADOW_PORTFOLIO)
+    ap_dir.record_intraday("kim", M.SHADOW_PORTFOLIO, NOW, 2_100_000)
+    chart = M.shadow_chart("kim")
+    assert chart["principal"] == 2_100_000 and chart["value"] == 1_600_000 + 520_000
+    assert chart["pnl"] == 20_000 and chart["holdings"][0]["ticker"] == "NVDA"
+    assert chart["holdings"][0]["pl_pct"] == pytest.approx(4.0)
+    assert chart["intraday"][0][1] == 2_100_000
+
+
+def test_value_chart_renders(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    from alpha.myaccount_widgets import ValueChart, chart_points, chart_summary
+
+    chart = {"principal": 1_063_707, "value": 1_070_000, "pnl": 6_293, "pnl_pct": 0.59, "cash": 700_000,
+             "intraday": [["2026-10-09T13:30:00+00:00", 1_063_707], ["2026-10-09T13:45:00+00:00", 1_070_000]],
+             "daily": [["2026-10-09", 1_070_000]]}
+    assert "넣은 돈 1,063,707원" in chart_summary(chart) and "+6,293원" in chart_summary(chart)
+    assert len(chart_points(chart)) == 2
+    w = ValueChart()
+    w.resize(500, 200)
+    w.set_data(chart_points(chart), chart["principal"])
+    assert not w.grab().isNull()
+    w.set_data([], 0)                                             # 데이터가 없어도 그린다
+    assert not w.grab().isNull()
