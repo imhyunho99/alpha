@@ -65,6 +65,13 @@ class FakeKb:
             if ex != body["krx_cd"]:
                 return _Resp(200, {"dataHeader": {"resultCode": "500", "resultMessage": "종목 없음"}})
             return _Resp(200, _ok({"now_prc_p4": f" {usd}", "now_prc_krw_p2": f"   {krw}"}))
+        if api == "ssqm2341":
+            return _Resp(200, _ok({"Record1": [{"stnd_is_no": "KR7005930003", "nccls_q": "2", "ordr_no": "77"},
+                                               {"stnd_is_no": "KR7000660001", "nccls_q": "0", "ordr_no": "78"}]}))
+        if api == "spqm2204":
+            return _Resp(200, _ok({"Record1": [{"shrt_is_cd": "NVDA", "nccls_q_p6": "1.000000", "ordr_no": "91"}]}))
+        if api in ("ssam1806", "skam2102"):
+            return _Resp(200, _ok({"ordr_no": "0040000700", "o_msg": "취소 완료"}))
         if api in ("ssam1801", "ssam1802", "skam2101", "skam2201"):
             return _Resp(200, _ok({"ordr_no": "0040000638", "o_msg": "정상적으로 주문 완료되었습니다."}))
         if api == "ssqm2952":
@@ -129,7 +136,10 @@ def test_dry_run_never_calls_order_apis():
     assert not [c for c in fake.calls if c[0].startswith(("ssam", "skam"))]
 
 
-def test_live_orders_use_the_right_kb_apis():
+def test_live_orders_use_the_right_kb_apis(monkeypatch):
+    from alpha_server.brokers import kb_broker
+
+    monkeypatch.setattr(kb_broker, "market_open", lambda t, now=None: True)   # 장 시간 판정은 따로 시험
     kb, fake = _kb(dry_run=False)
     assert kb.execute_order("005930.KS", "buy", 3)["status"] == "success"
     assert kb.execute_order("005930.KS", "sell", 1)["status"] == "success"
@@ -603,3 +613,29 @@ def test_token_is_shared_across_broker_instances():
     KbBroker("other-key", "s", session=fake, suffix_fn=lambda c: ".KS").get_current_price("005930.KS")
     assert fake.tokens == 2                       # 앱 키가 다르면 따로
     kb_broker._TOKENS.clear()
+
+
+
+def test_open_orders_limit_and_cancel_follow_kb_spec():
+    from datetime import datetime, timezone
+
+    kb, fake = _kb(dry_run=False)
+    opens = kb.open_orders(datetime(2026, 10, 12, 1, 0, tzinfo=timezone.utc))
+    assert {(o["ticker"], o["order_no"]) for o in opens} == {("005930.KS", "77"), ("NVDA", "91")}
+    r = kb.place_limit("NVDA", "buy", 1, 100.5)
+    assert r["status"] == "success" and r["order_no"] == "0040000638"
+    assert kb.cancel("NVDA", r["order_no"])["status"] == "success"
+    assert kb.cancel("005930.KS", "77", 2)["status"] == "success"
+    bodies = {c[0]: c[1]["dataBody"] for c in fake.calls}
+    assert bodies["skam2101"] == {"trd_dl_ccd": "02", "is_cd": "NVDA", "frgn_ordr_typ_cd": "2",
+                                  "frgn_ordr_q": "1", "frgn_ordr_prc_p4": "100.50"}
+    assert bodies["skam2102"] == {"crct_cncl_clsf": "2", "is_cd": "NVDA", "orgn_ordr_no": "0040000638",
+                                  "frgn_ordr_prc_p4": "0"}
+    assert bodies["ssam1806"] == {"is_cd": "005930", "crct_clsf": "2", "orgn_ordr_no": "77", "ordr_q": "2"}
+
+
+def test_dry_run_never_sends_limit_or_cancel():
+    kb, fake = _kb(dry_run=True)
+    kb.place_limit("NVDA", "buy", 1, 100)
+    kb.cancel("NVDA", "1")
+    assert not [c for c in fake.calls if c[0].startswith(("ssam", "skam"))]
