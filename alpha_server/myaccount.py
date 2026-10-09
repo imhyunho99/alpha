@@ -396,7 +396,10 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
     baseline: dict[str, float] = {}
     existing_cfg = ap_store.load_config(username, portfolio)
     existing, _ = ap_store.load_account(username, portfolio) if existing_cfg.get("shadow_of") else (None, None)
+    principal = float(existing_cfg.get("principal") or 0) if existing_cfg.get("sleeve") else 0.0
     if sleeve and existing is not None and existing_cfg.get("sleeve"):
+        # 입금을 다시 맞추기로 반영할 때 넣은 돈 누계도 늘린다(현금이 줄어든 건 에이전트 매수라 원금이 아니다)
+        principal += max(0.0, real_cash - existing.cash) if not _recent_live_orders(username, portfolio, now) else 0.0
         account = existing   # 다시 맞추기: 에이전트 몫(보유 종목)은 그대로
         # '새 돈만' 운용에서 계좌의 현금은 전부 에이전트 몫이다. 입금 직후 이걸 눌러 바로 반영한다
         # (자동 감지는 다음 연동 때, 실주문 직후 3일은 보류).
@@ -407,6 +410,7 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
     elif sleeve:
         account = PaperAccount(cash=real_cash)
         baseline = dict(real_qty)
+        principal = real_cash
     else:
         account = PaperAccount(cash=real_cash)
         for p in snap.get("positions", []):
@@ -434,7 +438,7 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
             "temperature": int(temperature), "capital": round(total), "active": True, "horizon": "medium",
             "mode": "news", "portfolio": portfolio, "shadow_of": broker_name, "seeded_at": now.isoformat(),
             "broker": {"name": broker_name, "dry_run": True},
-            "sleeve": bool(sleeve), "baseline": baseline,
+            "sleeve": bool(sleeve), "baseline": baseline, "principal": round(principal),
         }, portfolio)
         ap_store.save_account(username, account, None, portfolio, last_tracked_at=now)
         if not (sleeve and existing is not None and existing_cfg.get("sleeve")):
@@ -448,6 +452,41 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
     audit_log.record("config", "shadow_seeded", actor=username, portfolio=portfolio, broker=broker_name,
                      holdings=len(account.positions), dry_run=True)
     return shadow_status(username, portfolio)
+
+
+def _recent_live_orders(username: str, portfolio: str, now: datetime) -> bool:
+    """실주문 후 3일은 결제(D+2) 때문에 예수금이 실제보다 많아 보인다 — 그 사이엔 원금으로 세지 않는다."""
+    from .autopilot import mirror
+
+    last = mirror.load_state(username, portfolio).get("last_live_order_at")
+    return bool(last) and now - datetime.fromisoformat(last) < timedelta(days=3)
+
+
+def shadow_chart(username: str, portfolio: str = SHADOW_PORTFOLIO) -> dict:
+    """차트용: 넣은 돈, 지금 평가액, 장중(15분)·일별 평가액."""
+    from .autopilot import store as ap_store
+    from .autopilot.prices import LivePrices
+
+    cfg = ap_store.load_config(username, portfolio)
+    account, _ = ap_store.load_account(username, portfolio)
+    value = None
+    holdings = []
+    if account is not None:
+        prices = LivePrices().get_many(list(account.positions), datetime.now(timezone.utc)) if account.positions else {}
+        value = account.equity(prices)
+        for t, p in sorted(account.positions.items()):
+            v = p.quantity * prices.get(t, p.avg_price)
+            holdings.append({"ticker": t, "quantity": p.quantity, "value_krw": round(v),
+                             "pl_pct": round((prices[t] / p.avg_price - 1) * 100, 1) if t in prices and p.avg_price else None})
+        holdings.sort(key=lambda h: -h["value_krw"])
+    principal = float(cfg.get("principal") or 0)
+    return {"principal": round(principal), "value": round(value) if value is not None else None,
+            "cash": round(account.cash) if account else None,
+            "pnl": round(value - principal) if value is not None and principal else None,
+            "pnl_pct": round((value / principal - 1) * 100, 2) if value is not None and principal else None,
+            "intraday": ap_store.load_intraday(username, portfolio),
+            "daily": sorted(ap_store.load_equity(username, portfolio).items()),
+            "holdings": holdings}
 
 
 def stop_shadow(username: str, portfolio: str = SHADOW_PORTFOLIO) -> dict:

@@ -1,8 +1,10 @@
 """💼 내 계좌 탭 — 증권사 실계좌를 읽어 보여주고 분석한다. 조회 전용, 주문 버튼 없음."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from datetime import datetime
+
+from PySide6.QtCore import QPointF, Qt, QTimer, QUrl
+from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen
 from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
@@ -28,6 +30,86 @@ KEY_GUIDE = (
     "3. [불러오기] — 보유 종목·손익·매매 기록이 이 화면에 나옵니다.\n"
     "조회만 합니다. 이 화면에서는 주문이 나가지 않습니다."
 )
+
+
+class ValueChart(QWidget):
+    """에이전트 몫 평가액 곡선 + 넣은 돈(원금) 기준선. 기준선 위면 초록, 아래면 빨강."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._points: list[tuple[str, float]] = []
+        self._principal = 0.0
+        self.setMinimumHeight(180)
+
+    def set_data(self, points, principal: float) -> None:
+        self._points = [(str(t), float(v)) for t, v in points or [] if isinstance(v, (int, float))]
+        self._principal = float(principal or 0)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        left, right, top, bottom = 78, 12, 12, 24
+        if len(self._points) < 2:
+            painter.drawText(self.rect(), Qt.AlignCenter,
+                             "운용 기록이 쌓이면 그래프가 그려집니다 (15분마다 기록)")
+            return
+        values = [v for _, v in self._points] + ([self._principal] if self._principal else [])
+        lo, hi = min(values), max(values)
+        pad = (hi - lo) * 0.1 or max(hi * 0.01, 1.0)
+        lo, hi = lo - pad, hi + pad
+
+        def y_of(v):
+            return top + (hi - v) / (hi - lo) * (h - top - bottom)
+
+        def x_of(i):
+            return left + i / (len(self._points) - 1) * (w - left - right)
+
+        painter.setPen(QPen(QColor("#888888"), 1))
+        for v in (hi - pad, lo + pad):
+            painter.drawText(QPointF(4, y_of(v) + 4), f"{v:,.0f}")
+        painter.drawText(QPointF(left, h - 6), _label_time(self._points[0][0]))
+        end = _label_time(self._points[-1][0])
+        painter.drawText(QPointF(w - right - 7 * len(end), h - 6), end)
+        if self._principal:
+            painter.setPen(QPen(QColor("#888888"), 1, Qt.DashLine))
+            py = y_of(self._principal)
+            painter.drawLine(QPointF(left, py), QPointF(w - right, py))
+            painter.drawText(QPointF(left + 4, py - 4), f"넣은 돈 {self._principal:,.0f}")
+        prev = None
+        for i, (_, v) in enumerate(self._points):
+            pt = QPointF(x_of(i), y_of(v))
+            if prev is not None:
+                up = v >= self._principal if self._principal else True
+                painter.setPen(QPen(QColor("#2a9d8f" if up else "#d62828"), 2))
+                painter.drawLine(prev, pt)
+            prev = pt
+
+
+def _label_time(iso: str) -> str:
+    try:
+        return datetime.fromisoformat(iso).astimezone().strftime("%m-%d %H:%M")
+    except ValueError:
+        return iso[:10]
+
+
+def chart_summary(chart: dict) -> str:
+    if not chart or chart.get("value") is None:
+        return ""
+    parts = [f"넣은 돈 {won(chart.get('principal'))}", f"지금 {won(chart.get('value'))}"]
+    if chart.get("pnl") is not None:
+        parts.append(f"손익 {_num(chart.get('pnl')):+,.0f}원 ({_num(chart.get('pnl_pct')):+.2f}%)")
+    parts.append(f"그중 현금 {won(chart.get('cash'))}")
+    return " · ".join(parts)
+
+
+def chart_points(chart: dict) -> list:
+    """장중(15분) 기록이 있으면 그것, 없으면 일별."""
+    intraday = [tuple(r) for r in (chart or {}).get("intraday") or [] if len(r) == 2]
+    if len(intraday) >= 2:
+        return intraday
+    return [(d, v) for d, v in (chart or {}).get("daily") or []]
 
 
 def won(value) -> str:
@@ -103,6 +185,10 @@ class MyAccountTab(QWidget):
         self._workers: list[_Worker] = []
         self._loaded_once = False
         self._build()
+        # 보이는 동안 1분마다 에이전트 상태·차트만 새로 받는다(증권사 잔고 조회는 [불러오기] 때만)
+        self._shadow_timer = QTimer(self)
+        self._shadow_timer.setInterval(60_000)
+        self._shadow_timer.timeout.connect(lambda: self._run(core.account_shadow, self._on_shadow))
 
     def _build(self):
         layout = QVBoxLayout(self)
@@ -158,9 +244,25 @@ class MyAccountTab(QWidget):
         self.shadow_label.setWordWrap(True)
         srow.addWidget(self.shadow_label, 1)
         sb.addLayout(srow)
+        self.shadow_money = QLabel("")
+        self.shadow_money.setStyleSheet("font-weight: bold;")
+        sb.addWidget(self.shadow_money)
+        self.shadow_chart = ValueChart()
+        sb.addWidget(self.shadow_chart)
+        tables = QHBoxLayout()
+        left_box = QVBoxLayout()
+        left_box.addWidget(QLabel("에이전트가 산 종목"))
+        self.shadow_holdings = _make_table(["종목", "수량", "평가액", "손익률"])
+        self.shadow_holdings.setMaximumHeight(140)
+        left_box.addWidget(self.shadow_holdings)
+        tables.addLayout(left_box, 1)
+        right_box = QVBoxLayout()
+        right_box.addWidget(QLabel("주문 기록"))
         self.shadow_orders = _make_table(["시각", "종목", "주문", "수량", "금액", "결과"])
         self.shadow_orders.setMaximumHeight(140)
-        sb.addWidget(self.shadow_orders)
+        right_box.addWidget(self.shadow_orders)
+        tables.addLayout(right_box, 1)
+        sb.addLayout(tables)
         layout.addWidget(self.shadow_box)
 
         split = QSplitter(Qt.Vertical)
@@ -197,9 +299,14 @@ class MyAccountTab(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._shadow_timer.start()
         if not self._loaded_once:
             self._loaded_once = True
             self.refresh()
+
+    def hideEvent(self, event):
+        self._shadow_timer.stop()
+        super().hideEvent(event)
 
     def refresh(self):
         self.load_btn.setEnabled(False)
@@ -240,11 +347,19 @@ class MyAccountTab(QWidget):
         exists = isinstance(data, dict) and data.get("exists")
         self.shadow_start.setText("지금 잔고로 다시 맞추기" if exists else "내 계좌로 에이전트 시작")
         self.shadow_stop.setEnabled(bool(exists and data.get("active")))
+        chart = (data or {}).get("chart") if isinstance(data, dict) else None
+        self.shadow_money.setText(chart_summary(chart or {}))
+        self.shadow_chart.set_data(chart_points(chart or {}), (chart or {}).get("principal") or 0)
+        _fill(self.shadow_holdings, [
+            [str(h.get("ticker")), f"{_num(h.get('quantity')):.4g}", won(h.get("value_krw")), pct(h.get("pl_pct"))]
+            for h in _rows((chart or {}).get("holdings"))
+        ])
         _fill(self.shadow_orders, [
             [str(o.get("at", ""))[5:16].replace("T", " "), str(o.get("ticker", "")),
              "매수" if o.get("action") == "buy" else "매도", f"{_num(o.get('quantity')):g}",
              won(o.get("amount_krw")),
-             {"success": "기록됨", "risk_blocked": "위험 한도로 보류"}.get(o.get("status"), f"실패: {o.get('message', '')}")]
+             ("체결 요청" if not o.get("dry_run", True) else "기록됨") if o.get("status") == "success"
+             else {"risk_blocked": "위험 한도로 보류", "market_closed": "장 마감"}.get(o.get("status"), f"실패: {o.get('message', '')}")]
             for o in _rows((data or {}).get("orders") if isinstance(data, dict) else [])
         ])
 
