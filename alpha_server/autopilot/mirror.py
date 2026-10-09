@@ -255,6 +255,13 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
                     audit_log.record("trade", "broker_self_test", actor=f"{username}/{portfolio}",
                                      market=market, ok=result.get("ok"), step=result.get("step"))
                     state.setdefault("self_tests", []).append({"at": now.isoformat(), "market": market, **result})
+                    if result.get("ok") and market == "US" and hasattr(broker, "fractional_test"):
+                        # 미국은 소수점으로 운용한다 — 실제 소수점 매수 한 건(약 2천원)도 통과해야 연다(사용자 승인 10/9)
+                        frac = broker.fractional_test()
+                        state["self_tests"].append({"at": now.isoformat(), "market": "US-fractional", **frac})
+                        audit_log.record("trade", "broker_self_test", actor=f"{username}/{portfolio}",
+                                         market="US-fractional", ok=frac.get("ok"))
+                        result = frac if not frac.get("ok") else result
                     if result.get("ok"):
                         state.setdefault("verified", {})[market] = now.isoformat()
                     else:
@@ -276,7 +283,10 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
                     o.update(status="risk_blocked", message=reason)
                     done.append(o)
                     continue
-            res = broker.execute_order(o["ticker"], o["action"], o["quantity"])
+            if live and o["action"] == "buy" and not o["ticker"].upper().endswith((".KS", ".KQ")):
+                res = broker.execute_order(o["ticker"], "buy", o["quantity"], amount_krw=o["amount_krw"])
+            else:
+                res = broker.execute_order(o["ticker"], o["action"], o["quantity"])
             o.update(status=res.get("status", "error"), message=res.get("message", ""),
                      order_no=res.get("order_no", ""))
             if o["action"] == "buy" and o["status"] == "success":
