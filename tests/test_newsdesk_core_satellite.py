@@ -313,3 +313,17 @@ def test_nan_price_is_treated_as_missing():
     r = book.step(prices={**PRICES, "005930.KS": float("nan")}, params=PARAMS_CS_GUARD)
     assert "005930.KS" not in book.account.positions
     assert r.skipped is None
+
+
+def test_unbuyable_whole_share_names_do_not_leave_cash_idle():
+    """10/9 실측: 1주가 종목 상한보다 비싼 국내 종목 몫을 비워 둬 현금 73%. 소액 실계좌 정책에만 켠다."""
+    from alpha_server.newsdesk.signals import PARAMS_LIVE_SLEEVE as PARAMS_CS_WHOLE
+
+    prices = {**PRICES, "000660.KS": 1_770_000.0}
+    style = _style(focus_tickers=list(FOCUS) + ["000660.KS"])
+    with_expensive = Book(style=style, capital=1_000_000.0)
+    with_expensive.step(prices=prices, params=PARAMS_CS_WHOLE)
+    without = Book(style=_style(), capital=1_000_000.0)
+    without.step(prices=prices, params=PARAMS_CS_WHOLE)
+    assert "000660.KS" not in with_expensive.account.positions
+    assert with_expensive.account.cash == pytest.approx(without.account.cash, rel=0.01)   # 그 몫이 다른 종목으로

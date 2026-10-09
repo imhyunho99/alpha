@@ -46,6 +46,8 @@ class NewsParams:
     whole_shares_kr: bool = False    # 한국 주식은 1주 단위로 (실계좌 제약)
     # core_satellite: 손절·익절로 나간 종목도 lock_days 동안 코어로 다시 사지 않는다
     guard_lock: bool = False
+    # core_satellite: 1주가 종목 상한보다 비싼 1주 단위 종목은 코어 몫을 받지 않고 나머지에 나눈다(소액 계좌용)
+    fill_unbuyable: bool = False
     label: str = field(default="current", compare=False)
 
 
@@ -77,6 +79,9 @@ PARAMS_CS_REAL = NewsParams(policy="core_satellite", band=0.20, whole_shares_kr=
 PARAMS_CS_GUARD = NewsParams(policy="core_satellite", whole_shares_kr=True, guard_lock=True, label="cs_whole_guardlock")
 
 PARAMS_LIVE = PARAMS_CS_GUARD
+# 실계좌 '새 돈만' 운용(소액) — 살 수 없는 종목 몫을 비워 두지 않는다
+PARAMS_LIVE_SLEEVE = NewsParams(policy="core_satellite", whole_shares_kr=True, guard_lock=True,
+                                fill_unbuyable=True, label="cs_sleeve")
 
 # 실시간 루프가 쓰는 정책. 2026-10-01 판정(docs/NEWSDESK_CORE_SATELLITE.md)으로 current 에서 바꿨고,
 # 같은 날 실계좌 준비로 한국 주식 1주 단위 + 손절·익절 후 잠금을 더했다. band 는 판정에서 탈락.
