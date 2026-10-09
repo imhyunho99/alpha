@@ -195,7 +195,9 @@ def test_file_tz_cache_leaves_no_open_handles_behind(tmp_path):
         cache.store(f"TKR{i}", "America/New_York")
         cache.lookup(f"TKR{i}")
 
-    assert yf_session.open_fd_count() == before
+    # 누수라면 50번 저장에 50개가 쌓인다(실제 사고: 907종목에 226개). 프로세스 전체 fd 를 세므로
+    # 앞 테스트가 남긴 Qt 작업 스레드 등이 몇 개를 열고 닫는 잡음(실측 ±3)은 허용한다.
+    assert yf_session.open_fd_count() < before + 10
 
 
 def test_file_tz_cache_survives_a_corrupt_file(tmp_path):

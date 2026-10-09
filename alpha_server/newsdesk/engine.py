@@ -143,7 +143,10 @@ def news_step(
     universe = sorted((set(watch) - set(style.avoid_tickers)) | held_now)
     if params.policy == "defensive":
         universe = sorted(set(universe) | (set(style.focus_tickers) - set(style.avoid_tickers)))
-    snapshot = prices.get_many(universe, at)
+    # 야후가 가끔 NaN 종가를 준다. 실측(10/9): NaN 으로 주 수를 계산하다 루프가 멈췄다. 이상한 값은
+    # '시세 없음'으로 보고, 보유 종목이면 가드가 그날 매매를 건너뛴다.
+    snapshot = {t: p for t, p in prices.get_many(universe, at).items()
+                if isinstance(p, (int, float)) and math.isfinite(p) and p > 0}
     decisions: list[dict] = []
 
     # 1) 공통 가드

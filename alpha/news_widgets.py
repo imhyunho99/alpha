@@ -412,7 +412,7 @@ class NewsTab(QWidget):
                         f"서버 응답을 기다리는 중 — 포트폴리오 목록을 다시 불러옵니다 "
                         f"({self._portfolio_retries}/{PORTFOLIO_RETRY_MAX})"
                     )
-                QTimer.singleShot(PORTFOLIO_RETRY_MS, self._retry_portfolios)
+                QTimer.singleShot(PORTFOLIO_RETRY_MS, self, self._retry_portfolios)  # 탭이 사라지면 함께 취소
             elif self.portfolio_combo.count() == 0:
                 self.summary_label.setText("포트폴리오 목록을 불러오지 못했습니다. [새로고침]을 눌러 다시 시도하세요.")
             return  # 지금 보이는 것은 유지한다

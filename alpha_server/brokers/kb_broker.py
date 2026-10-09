@@ -65,6 +65,15 @@ class KbApiError(RuntimeError):
     pass
 
 
+# 토큰은 24시간 유효하다. 연동·조회마다 KbBroker 를 새로 만들어 매번 발급받았다 — 사용자가 KB 에서
+# 발급 알림을 받는다(2026-10-09 문의). 프로세스 안에서 앱 키별로 나눠 쓴다. 파일에는 남기지 않는다
+# (살아 있는 토큰이 디스크에 남지 않게 — 서버를 다시 켤 때만 새로 받는다).
+import threading as _threading
+
+_TOKENS: dict[tuple[str, str], tuple[str, float]] = {}
+_TOKENS_LOCK = _threading.Lock()
+
+
 _MARKET_CACHE: dict[str, str] = {}
 
 
@@ -138,8 +147,16 @@ class KbBroker(BaseBroker):
         return {"dataHeader": {"ipAddr": self.ip, "macAddr": self.mac}, "dataBody": body}
 
     def _access_token(self, force: bool = False) -> str:
-        if self._token and not force and time.time() < self._token_exp - 300:
-            return self._token
+        key = (self.base_url, self.app_key)
+        with _TOKENS_LOCK:
+            if not force:
+                cached = _TOKENS.get(key)
+                if cached and time.time() < cached[1] - 300:
+                    self._token, self._token_exp = cached
+                    return cached[0]
+            return self._issue_token(key)
+
+    def _issue_token(self, key) -> str:
         r = self.http.post(
             f"{self.base_url}/oauth2/token",
             json=self._envelope({"grantType": "client_credentials",
@@ -159,6 +176,7 @@ class KbBroker(BaseBroker):
             raise KbApiError(f"토큰 발급 실패: {_kb_message(data) or f'HTTP {r.status_code}'}")
         self._token = token
         self._token_exp = time.time() + int(num(body.get("expires_in")) or 86400)
+        _TOKENS[key] = (token, self._token_exp)
         return token
 
     def _post(self, api: str, body: dict) -> dict:

@@ -78,11 +78,19 @@ def window(qapp, offline):
     yield w
     w.progress_timer.stop()
     w.health_timer.stop()
+    for name in ("_health_worker", "_progress_worker"):
+        worker = getattr(w, name, None)
+        if worker is not None:
+            worker.wait(5000)
     for tab in (w.tabs.widget(i) for i in range(w.tabs.count())):
         for worker in list(getattr(tab, "_workers", [])):
             worker.wait(3000)
     QApplication.processEvents()
     w.deleteLater()
+    # deleteLater 는 이벤트 루프가 돌아야 실행된다. 안 돌리면 탭의 재시도 타이머가 뒤 테스트까지 살아
+    # 작업 스레드를 띄우고, 열린 파일 수를 재는 테스트가 흔들린다.
+    from PySide6.QtCore import QCoreApplication, QEvent
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 def _tab_titles(w):
@@ -173,3 +181,30 @@ def test_analysis_controls_still_reachable(window):
 def test_window_builds_without_server(window):
     assert window.windowTitle().startswith("Alpha")
     assert window.tabs.count() == 5
+
+
+
+def test_slow_server_does_not_freeze_the_window(window, monkeypatch):
+    """10/9 실측: 서버가 최대 9초 늦게 답하는 동안 화면 스레드가 기다려 앱이 '응답 없음'으로 굳었다."""
+    import time
+
+    def slow(*a, **kw):
+        time.sleep(2.0)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(core, "server_health", slow)
+    # 서버가 '응답함'이 되면 시작 절차가 로그인 창을 모달로 띄워 테스트가 영영 멈춘다. 바로 닫히는 창으로.
+    monkeypatch.setattr(gui, "LoginDialog", lambda *a, **k: type("D", (), {"exec": lambda self: 0})())
+    while getattr(window, "_health_worker", None) is not None:   # 창을 만들 때 시작한 확인이 끝나길 기다린다
+        QApplication.processEvents()
+        time.sleep(0.02)
+    start = time.monotonic()
+    window._update_health_status()
+    window._update_health_status()          # 지난 확인이 안 끝났으면 쌓지 않는다
+    window.check_progress()
+    assert time.monotonic() - start < 0.5   # 화면 스레드는 바로 돌아온다
+    deadline = time.monotonic() + 6
+    while getattr(window, "_health_worker", None) is not None and time.monotonic() < deadline:
+        QApplication.processEvents()
+        time.sleep(0.05)
+    assert "서버 연결됨" in window.statusBar().currentMessage()

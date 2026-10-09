@@ -260,7 +260,7 @@ class AutopilotTab(QWidget):
             if self._portfolio_retries < PORTFOLIO_RETRY_MAX and not (isinstance(result, dict) and result.get("auth_expired")):
                 self._portfolio_retries += 1
                 pending = getattr(self, "_pending_selection", None)
-                QTimer.singleShot(PORTFOLIO_RETRY_MS, lambda: self._load_portfolios(select=pending))
+                QTimer.singleShot(PORTFOLIO_RETRY_MS, self, lambda: self._load_portfolios(select=pending))  # 탭이 사라지면 함께 취소
             return
         self._portfolio_retries = 0
         entries = []

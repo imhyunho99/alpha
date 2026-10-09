@@ -455,7 +455,8 @@ def test_main_window_registers_news_tab():
 def test_portfolio_list_retries_when_server_is_busy(qapp, offline, monkeypatch):
     # 앱 시작 때 탭들이 몰려 목록 요청이 시간 초과되면, 기존 계좌가 영영 안 보이던 결함(E2E)
     scheduled = []
-    monkeypatch.setattr(news_widgets.QTimer, "singleShot", staticmethod(lambda ms, fn: scheduled.append(fn)))
+    # singleShot(ms, 문맥 위젯, 함수) — 탭이 사라지면 재시도도 취소되게 문맥을 넘긴다
+    monkeypatch.setattr(news_widgets.QTimer, "singleShot", staticmethod(lambda ms, *rest: scheduled.append(rest[-1])))
     tab = news_widgets.NewsTab()
     _drain(tab)
     scheduled.clear()
