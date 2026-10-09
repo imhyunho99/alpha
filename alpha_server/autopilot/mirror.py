@@ -89,7 +89,7 @@ def due(username: str, portfolio: str, cfg: dict, traded: bool, now: datetime) -
 
 
 def plan(paper_weights: dict[str, float], real: dict, price_krw: dict[str, float],
-         max_position_pct: float, min_order: float = MIN_ORDER_KRW) -> list[dict]:
+         max_position_pct: float, min_order: float = MIN_ORDER_KRW, cap_fn=None) -> list[dict]:
     """목표 비중과 실계좌 잔고 → 주문 목록(매도 먼저). 순수 함수 — 테스트가 직접 부른다."""
     equity = float(real.get("total_value") or 0.0)
     held = {p["ticker"]: p for p in real.get("positions", [])}
@@ -98,7 +98,7 @@ def plan(paper_weights: dict[str, float], real: dict, price_krw: dict[str, float
         price = price_krw.get(t)
         if not price or price <= 0:
             continue
-        weight = min(paper_weights.get(t, 0.0), max_position_pct)
+        weight = min(paper_weights.get(t, 0.0), cap_fn(t) if cap_fn else max_position_pct)
         target = equity * weight
         current = float(held[t]["value_krw"]) if t in held else 0.0
         diff = target - current
@@ -242,8 +242,11 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
             view = sleeve_view(real, baseline, account.equity(prices), price_krw)
         from ..newsdesk.engine import min_trade
 
+        from ..risk_manager import position_cap
+
         orders = plan(weights, view, price_krw, rm.config.max_position_pct,
-                      min_order=min_trade(float(view.get("total_value") or 0)))
+                      min_order=min_trade(float(view.get("total_value") or 0)),
+                      cap_fn=lambda t: position_cap(t, rm.config))
         live = not opts["dry_run"]
         if live:
             # 체결을 기다리는 주문: 잔고에 반영됐으면 지우고, 아니면 그 종목은 이번에 다시 주문하지 않는다

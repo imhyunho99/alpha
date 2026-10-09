@@ -384,3 +384,8 @@ def start_account_shadow(temperature: int = 5) -> dict:
 
 def stop_account_shadow() -> dict:
     return _handle_request("delete", "/account/shadow")
+
+
+def account_history(refresh: bool = False) -> dict:
+    """계좌 개설 이후 변동. 처음엔 시세를 받느라 1~2분 걸릴 수 있다(서버가 6시간 캐시)."""
+    return _handle_request("get", "/account/history", params={"refresh": str(refresh).lower()}, timeout=180)

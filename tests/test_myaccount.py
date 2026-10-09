@@ -199,8 +199,11 @@ def test_my_account_tab_renders_both_states(monkeypatch):
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])  # noqa: F841
+    from alpha import myaccount_widgets as mw
     from alpha.myaccount_widgets import MyAccountTab
 
+    # 화면이 잔고를 그리면서 에이전트 상태를 백그라운드로 묻는다 — 실제 서버에 닿지 않게
+    monkeypatch.setattr(mw.core, "account_shadow", lambda: {"exists": False})
     tab = MyAccountTab()
     tab._on_data({"registered": False, "broker": "kb"})
     assert not tab.guide.isHidden() and "키" in tab.status.text()
@@ -212,6 +215,8 @@ def test_my_account_tab_renders_both_states(monkeypatch):
     assert "총 평가 8,000,000원" in tab.summary.text()
     assert tab.holdings.rowCount() == 3 and tab.trades.rowCount() == 2
     assert tab.findings.count() >= 1
+    for worker in list(tab._workers):
+        worker.wait(3000)                                   # 스레드가 도는 중에 탭이 사라지면 Qt 가 abort 한다
 
 
 # ---------- 실계좌 리밸런싱 (기록만) ----------

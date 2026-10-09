@@ -26,6 +26,7 @@ class ShadowPayload(BaseModel):
     broker: str = Field("kb", pattern=r"^(kb)$")
     temperature: int = Field(5, ge=1, le=7)   # 8 이상은 모의 레버리지 — 실계좌 복제에는 쓰지 않는다
     sleeve: bool = True                        # 새 돈만 운용(기존 보유 종목은 건드리지 않음)
+    strategy: str = Field("allocation", pattern=r"^(allocation|news)$")
 
 
 @router.get("/shadow", summary="실계좌 에이전트 운용 상태·기록된 주문·차트 데이터")
@@ -50,7 +51,7 @@ def post_shadow(payload: ShadowPayload, user: UserPublic = Depends(require_user)
     from .newsdesk import runner
 
     try:
-        status = myaccount.seed_shadow(user.username, payload.broker, payload.temperature, sleeve=payload.sleeve)
+        status = myaccount.seed_shadow(user.username, payload.broker, payload.temperature, sleeve=payload.sleeve, strategy=payload.strategy)
     except ValueError:
         raise HTTPException(status_code=400, detail="KB증권 API 키가 등록되지 않았습니다.")
     except RuntimeError as exc:
@@ -66,3 +67,14 @@ def delete_shadow(user: UserPublic = Depends(require_user)):
 
     runner.stop(user.username, myaccount.SHADOW_PORTFOLIO)
     return myaccount.clean_for_json(myaccount.stop_shadow(user.username))
+
+
+@router.get(
+    "/history",
+    summary="계좌 개설 이후 날짜별 평가액·순입금·매매(직접/에이전트) — 거래내역으로 다시 쌓음",
+    dependencies=[Depends(rate_limit("account_history", capacity=4, per_seconds=60))],
+)
+def get_history(refresh: bool = False, user: UserPublic = Depends(require_user)):
+    from . import account_history, myaccount
+
+    return myaccount.clean_for_json(account_history.history(user.username, refresh=refresh))
