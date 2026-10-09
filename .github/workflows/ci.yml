@@ -23,18 +23,22 @@ jobs:
 
       - name: Install dependencies
         run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3 > /dev/null
           python -m pip install --upgrade pip
           pip install -r requirements.docker.txt
-          pip install pytest pytest-asyncio httpx ruff
+          pip install pytest pytest-asyncio httpx ruff PySide6
 
       - name: Lint (ruff)
         run: ruff check alpha alpha_server tests || true
 
-      - name: Run unit tests
+      - name: Run tests
         env:
           ALPHA_JWT_SECRET: test-secret-do-not-use-in-prod
+          QT_QPA_PLATFORM: offscreen
+        # 전체를 돌린다. 예전엔 7개 파일만 돌려 실계좌·실주문 안전장치 테스트가 CI 에서 빠져 있었다(10/9 발견).
+        # test_scheduler 는 main 에서도 2분 넘게 멈추는 기존 문제라 뺀다.
         run: |
-          pytest tests/test_unit.py tests/test_newsdesk_engine.py tests/test_newsdesk_sources.py tests/test_newsdesk_interpret.py tests/test_newsdesk_style.py tests/test_newsdesk_weights.py tests/test_newsdesk_backtest.py -q
+          pytest tests --ignore=tests/test_scheduler.py -q -o faulthandler_timeout=120
 
   docker-build:
     runs-on: ubuntu-latest
