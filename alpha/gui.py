@@ -9,7 +9,7 @@ from PySide6.QtCore import Slot, QThread, Signal, QTimer
 from PySide6.QtGui import QFont, QAction
 
 from alpha import core
-from alpha.autopilot_widgets import AutopilotTab
+from alpha.autopilot_widgets import AutopilotTab, _Worker
 from alpha.myaccount_widgets import MyAccountTab
 from alpha.news_widgets import NewsTab
 from alpha.strategy_widgets import (
@@ -33,6 +33,19 @@ class WorkerThread(QThread):
             self.finished.emit(result)
         except Exception as e:
             self.error.emit(str(e))
+
+def _fetch_health():
+    """작업 스레드에서 돈다. (health, me) — me 는 로그인돼 있을 때만."""
+    health = core.server_health()
+    me = None
+    if isinstance(health, dict) and "error" not in health and core.is_logged_in():
+        me = core._handle_request("get", "/auth/me")
+    return health, me
+
+
+def _fetch_progress():
+    return core._handle_request("get", "/progress", timeout=5)
+
 
 class AlphaGUI(QMainWindow):
     # core 가 작업 스레드에서 토큰 만료를 알릴 수 있다. 시그널로 GUI 스레드에 넘긴다.
@@ -111,17 +124,32 @@ class AlphaGUI(QMainWindow):
             if LoginDialog(self).exec() == QDialog.Accepted:
                 self._after_login()
 
+    # 서버 상태 확인은 작업 스레드에서 한다. 실측(10/9): 서버 응답이 4분 중 20%는 1초 넘게, 최대 9.3초
+    # 걸렸고, 이걸 화면 스레드에서 5초마다 기다려 앱이 '응답 없음'으로 굳었다(사용자에게는 크래시로 보임).
     def _update_health_status(self):
-        result = core.server_health()
-        if "error" in result:
+        if getattr(self, "_health_worker", None) is not None:
+            return   # 지난 확인이 아직 안 끝났다 — 쌓지 않는다
+        worker = _Worker(_fetch_health)
+        self._health_worker = worker
+        worker.done.connect(self._on_health)
+        worker.finished.connect(lambda w=worker: self._retire_worker("_health_worker", w))
+        worker.start()
+
+    def _retire_worker(self, attr: str, worker) -> None:
+        """끝난 그 작업만 정리한다. '지금 등록된 작업'을 지우면 아직 도는 스레드를 지워 앱이 죽는다."""
+        if getattr(self, attr, None) is worker:
+            setattr(self, attr, None)
+        worker.deleteLater()
+
+    def _on_health(self, result):
+        health, me = result if isinstance(result, tuple) else ({"error": result}, None)
+        if not isinstance(health, dict) or "error" in health:
             self.statusBar().showMessage("🔴 서버 오프라인")
-        else:
-            who = ""
-            if core.is_logged_in():
-                me = core._handle_request("get", "/auth/me")
-                if isinstance(me, dict) and "username" in me:
-                    who = f" | 👤 {me['username']} ({me.get('role','user')})"
-            self.statusBar().showMessage(f"🟢 서버 연결됨{who}")
+            return
+        who = ""
+        if isinstance(me, dict) and "username" in me:
+            who = f" | 👤 {me['username']} ({me.get('role','user')})"
+        self.statusBar().showMessage(f"🟢 서버 연결됨{who}")
 
     def _build_menu(self):
         menu = self.menuBar()
@@ -192,48 +220,49 @@ class AlphaGUI(QMainWindow):
         progress_layout.addWidget(self.progress_bar)
     
     def check_progress(self):
-        """서버에서 진행 상황 확인"""
-        try:
-            import requests
-            response = requests.get("http://127.0.0.1:8000/progress", timeout=1)
-            if response.status_code == 200:
-                progress = response.json()
-                
-                # 데이터 업데이트 진행 상황
-                data_status = progress.get("data_update", {})
-                if data_status.get("status") == "running":
-                    current = data_status.get("current", 0)
-                    total = data_status.get("total", 1)
-                    message = data_status.get("message", "")
-                    percent = int((current / total * 100)) if total > 0 else 0
-                    self.progress_bar.setValue(percent)
-                    self.progress_label.setText(f"⏳ 데이터 업데이트: {message} ({percent}%)")
-                    return
-                elif data_status.get("status") == "completed":
-                    self.progress_bar.setValue(100)
-                    self.progress_label.setText("✅ 데이터 업데이트 완료!")
-                    self.progress_timer.stop()
-                    self.progress_bar.setVisible(False)
-                    return
-                
-                # 모델 업데이트 진행 상황
-                model_status = progress.get("model_update", {})
-                if model_status.get("status") == "running":
-                    current = model_status.get("current", 0)
-                    total = model_status.get("total", 1)
-                    message = model_status.get("message", "")
-                    percent = int((current / total * 100)) if total > 0 else 0
-                    self.progress_bar.setValue(percent)
-                    self.progress_label.setText(f"⏳ 모델 학습: {message} ({percent}%)")
-                    return
-                elif model_status.get("status") == "completed":
-                    self.progress_bar.setValue(100)
-                    self.progress_label.setText("✅ 모델 학습 완료!")
-                    self.progress_timer.stop()
-                    self.progress_bar.setVisible(False)
-                    return
-        except:
-            pass
+        """서버에서 진행 상황 확인 (작업 스레드에서 받아 화면에 반영)."""
+        if getattr(self, "_progress_worker", None) is not None:
+            return
+        worker = _Worker(_fetch_progress)
+        self._progress_worker = worker
+        worker.done.connect(self._apply_progress)
+        worker.finished.connect(lambda w=worker: self._retire_worker("_progress_worker", w))
+        worker.start()
+
+    def _apply_progress(self, progress):
+        if not isinstance(progress, dict) or "error" in progress:
+            return
+        data_status = progress.get("data_update", {})
+        if data_status.get("status") == "running":
+            current = data_status.get("current", 0)
+            total = data_status.get("total", 1)
+            message = data_status.get("message", "")
+            percent = int((current / total * 100)) if total > 0 else 0
+            self.progress_bar.setValue(percent)
+            self.progress_label.setText(f"⏳ 데이터 업데이트: {message} ({percent}%)")
+            return
+        elif data_status.get("status") == "completed":
+            self.progress_bar.setValue(100)
+            self.progress_label.setText("✅ 데이터 업데이트 완료!")
+            self.progress_timer.stop()
+            self.progress_bar.setVisible(False)
+            return
+
+        model_status = progress.get("model_update", {})
+        if model_status.get("status") == "running":
+            current = model_status.get("current", 0)
+            total = model_status.get("total", 1)
+            message = model_status.get("message", "")
+            percent = int((current / total * 100)) if total > 0 else 0
+            self.progress_bar.setValue(percent)
+            self.progress_label.setText(f"⏳ 모델 학습: {message} ({percent}%)")
+            return
+        elif model_status.get("status") == "completed":
+            self.progress_bar.setValue(100)
+            self.progress_label.setText("✅ 모델 학습 완료!")
+            self.progress_timer.stop()
+            self.progress_bar.setVisible(False)
+            return
 
     def create_control_box(self, main_layout):
         control_box = QGroupBox("서버 제어")

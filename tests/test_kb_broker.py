@@ -565,7 +565,7 @@ def test_autopilot_tab_retries_portfolio_list(monkeypatch):
     monkeypatch.setattr(aw.AutopilotTab, "_load_portfolios", lambda self, select=None: None)
     monkeypatch.setattr(aw.AutopilotTab, "_load_config", lambda self: None)
     scheduled = []
-    monkeypatch.setattr(aw.QTimer, "singleShot", staticmethod(lambda ms, fn: scheduled.append(ms)))
+    monkeypatch.setattr(aw.QTimer, "singleShot", staticmethod(lambda ms, *rest: scheduled.append(ms)))
     tab = aw.AutopilotTab()
     tab._on_portfolios({"error": "서버 응답 시간이 초과되었습니다."})
     assert scheduled == [aw.PORTFOLIO_RETRY_MS]
@@ -589,3 +589,17 @@ def test_dry_run_does_not_record_the_same_plan_twice(mirror_env):
     acct.sell("005930.KS", acct.positions["005930.KS"].quantity, prices["005930.KS"])   # 종목이 바뀌면 다시 기록
     third = mirror.sync("kim", "news", cfg, acct, prices, NOW + timedelta(minutes=9), broker=broker)
     assert third["orders"] >= 1
+
+
+def test_token_is_shared_across_broker_instances():
+    """10/9 문의: 연동·조회마다 새 KbBroker 가 토큰을 새로 받아 KB 발급 알림이 반복됐다."""
+    from alpha_server.brokers import kb_broker
+
+    kb_broker._TOKENS.clear()
+    fake = FakeKb()
+    for _ in range(3):
+        KbBroker("shared-key", "s", session=fake, suffix_fn=lambda c: ".KS").get_current_price("005930.KS")
+    assert fake.tokens == 1
+    KbBroker("other-key", "s", session=fake, suffix_fn=lambda c: ".KS").get_current_price("005930.KS")
+    assert fake.tokens == 2                       # 앱 키가 다르면 따로
+    kb_broker._TOKENS.clear()

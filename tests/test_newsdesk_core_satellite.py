@@ -303,3 +303,13 @@ def test_guard_lock_keeps_stopped_out_ticker_out():
     assert "A" not in book.account.positions          # 다음 날 다시 사지 않는다
     book.step(at=NOW + timedelta(days=9), prices=crash, params=PARAMS_CS_GUARD)
     assert "A" in book.account.positions              # 잠금이 끝나면 코어로 복귀
+
+
+def test_nan_price_is_treated_as_missing():
+    """10/9 실측: NaN 종가로 주 수를 계산하다 ValueError 로 루프가 멈췄다."""
+    from alpha_server.newsdesk.signals import PARAMS_CS_GUARD
+
+    book = Book()
+    r = book.step(prices={**PRICES, "005930.KS": float("nan")}, params=PARAMS_CS_GUARD)
+    assert "005930.KS" not in book.account.positions
+    assert r.skipped is None
