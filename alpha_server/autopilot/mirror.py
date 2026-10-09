@@ -337,8 +337,8 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
                 res = broker.execute_order(o["ticker"], o["action"], o["quantity"])
             o.update(status=res.get("status", "error"), message=res.get("message", ""),
                      order_no=res.get("order_no", ""))
-            if o["action"] == "buy" and o["status"] == "success":
-                rm.record_buy()
+            if live and o["action"] == "buy" and o["status"] == "success":
+                rm.record_buy()   # 기록만 한 가상 매수는 하루 매수 한도에 세지 않는다(10/9: 기록 20건이 한도를 채움)
             if live and o["status"] == "success":
                 state["live_count"] += 1
                 state["last_live_order_at"] = now.isoformat()

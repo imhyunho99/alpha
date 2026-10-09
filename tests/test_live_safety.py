@@ -343,3 +343,18 @@ def test_small_account_engine_still_trades():
     from alpha_server.newsdesk.engine import min_trade
 
     assert min_trade(10_000_000) == 50_000 and min_trade(1_000_000) == 10_000 and min_trade(100_000) == 5_000
+
+
+def test_dry_run_buys_do_not_use_daily_buy_limit(env):
+    import json
+    from alpha_server import risk_manager
+
+    mirror, store, cfg = env
+    cfg = {**cfg, "broker": {"name": "kb", "dry_run": True}}
+    acct, prices = _shadow()
+    mirror.sync("kim", "my-kb", cfg, acct, prices, KR_OPEN, broker=LiveBroker())
+    import os
+
+    if os.path.exists(risk_manager.STATE_FILE):            # 한 건도 세지 않았으면 파일이 아예 안 생긴다
+        with open(risk_manager.STATE_FILE) as f:
+            assert json.load(f)["buys"] == 0
