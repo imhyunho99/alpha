@@ -20,7 +20,7 @@ from ..autopilot.journal import Journal
 from ..autopilot.temperature import profile_for
 from . import store
 from .engine import news_step
-from .signals import MAX_AGE_HOURS, PARAMS_LIVE
+from .signals import MAX_AGE_HOURS, PARAMS_LIVE, PARAMS_LIVE_SLEEVE
 
 INTERVAL_SEC = int(os.getenv("ALPHA_NEWS_INTERVAL_SEC", "180"))
 WATCH_CAP = 60
@@ -210,7 +210,7 @@ def _run_portfolio_locked(user, portfolio, recent, prices, now, watch, model_fn)
         acted_item_ids=acted,
         model_fn=model_fn,
         last_action_at=store.last_news_actions(user, portfolio),
-        params=PARAMS_LIVE,
+        params=PARAMS_LIVE_SLEEVE if cfg.get("sleeve") else PARAMS_LIVE,
         tilts=tilts,
     )
     if result.fills and result.skipped is None:

@@ -520,13 +520,20 @@ def _core_satellite(account, profile, style, weights, snapshot, at, journal, dec
                 tilts[d["ticker"]] = {"dir": -1, "until": at + lock, "keep": 0.0}
 
     core = [t for t in (style.focus_tickers or watch) if t not in style.avoid_tickers and t in snapshot]
-    core_set = set(core)
     equity = account.equity(snapshot)
     min_krw = min_trade(equity)
     deployable = equity * (100.0 - profile.cash_floor_pct) / 100.0 * profile.max_leverage * exposure
     share = core_share(profile.temperature, style.news_pct)
     cap_pct = min(style.max_position_pct, profile.max_position_pct) if style.max_position_pct else profile.max_position_pct
     per_cap = equity * cap_pct / 100.0
+    # 1주 단위로만 사는 종목인데 1주가 종목 상한보다 비싸면 영영 못 산다. 그 몫을 비워 두지 말고 나머지에
+    # 나눈다(이미 들고 있으면 유지). 실측(10/9): 실계좌 100만원 운용에서 국내 6종목 몫이 비어 현금 73%.
+    # 판정(2026-10-09, scripts/newsdesk_two_period.py): 100만원 계좌는 두 기간 모두 개선(+14.2→+17.0%,
+    # −10.2→−10.1%), 1,000만원 계좌는 상승장 −2.6%p 라 기준 탈락 → 소액 실계좌('새 돈만')에만 켠다.
+    if params.fill_unbuyable:
+        core = [t for t in core
+                if t in account.positions or not _whole(t, params) or snapshot[t] * (1 + SLIPPAGE_RATE) <= per_cap]
+    core_set = set(core)
     core_slot = min(deployable * share / len(core), per_cap) if core else 0.0
     sat_slot = deployable * (1.0 - share) / SATELLITE_SLOTS
 
