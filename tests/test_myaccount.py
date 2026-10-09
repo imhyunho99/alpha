@@ -325,24 +325,47 @@ def test_shadow_text():
 
 def test_sleeve_seed_keeps_existing_holdings_out(ap_dir):
     """10/9 사용자 결정: 새 돈만 운용. 기존 종목은 기준 보유분으로 묶는다."""
-    kb, _ = _kb()
+    kb, fake = _kb()
     status = M.seed_shadow("kim", "kb", broker=kb, now=NOW)            # 기본이 sleeve
     assert status["sleeve"] and status["baseline"] == {"005930.KS": 10, "035720.KS": 20, "NVDA": 10}
     account, _ = ap_dir.load_account("kim", M.SHADOW_PORTFOLIO)
     assert account.positions == {} and account.cash == pytest.approx(2_100_000)
+    assert ap_dir.load_config("kim", M.SHADOW_PORTFOLIO)["principal"] == 2_100_000
 
-    # 다시 맞추기: 에이전트 몫(그림자 포지션)은 그대로, 기준 보유분 = 실계좌 − 그림자 몫
+
+def test_sleeve_resync_rebuilds_from_real_account(ap_dir):
+    """10/9 실측 재현: 기록 모드에서 그림자가 '산' 주식(실제론 없음)을 남긴 채 현금만 덮어써 이중 계상 + 원금 부풀림."""
     from alpha_server.autopilot.account import Position
 
-    account.positions["NVDA"] = Position("NVDA", 2, 250_000)
-    ap_dir.save_account("kim", account, None, M.SHADOW_PORTFOLIO)
-    account.cash = 100_000                                   # 에이전트가 쓴 뒤
+    kb, fake = _kb()
+    M.seed_shadow("kim", "kb", broker=kb, now=NOW)
+    account, _ = ap_dir.load_account("kim", M.SHADOW_PORTFOLIO)
+    account.cash = 1_000_000                                    # 그림자가 장부상으로만 110만원어치 샀다
+    account.positions["AMD"] = Position("AMD", 4, 275_000)
     ap_dir.save_account("kim", account, None, M.SHADOW_PORTFOLIO)
     status = M.seed_shadow("kim", "kb", broker=kb, now=NOW)
-    assert status["baseline"]["NVDA"] == 8
     account, _ = ap_dir.load_account("kim", M.SHADOW_PORTFOLIO)
-    assert account.positions["NVDA"].quantity == 2
-    assert account.cash == pytest.approx(2_100_000)           # 입금 등 계좌 현금은 다시 맞추기로 바로 반영
+    assert account.positions == {}                              # 실계좌에 없는 건 지운다
+    assert account.cash == pytest.approx(2_100_000)
+    assert ap_dir.load_config("kim", M.SHADOW_PORTFOLIO)["principal"] == 2_100_000   # 원금 그대로
+    assert status["baseline"] == {"005930.KS": 10, "035720.KS": 20, "NVDA": 10}
+
+    # 에이전트가 실제로 NVDA 2주를 더 샀다(실계좌 12주)
+    class Bought(FakeKb):
+        def post(self, url, json=None, headers=None, timeout=None):
+            r = super().post(url, json, headers, timeout)
+            if url.endswith("ssqm2952"):
+                for row in r._payload["dataBody"]["Record1"]:
+                    if row["is_cd"] == "NVDA":
+                        row.update(hld_q="12", val_amt="3000000")
+            return r
+
+    kb2 = KbBroker("k", "s", dry_run=True, session=Bought(), suffix_fn=lambda c: ".KS")
+    status = M.seed_shadow("kim", "kb", broker=kb2, now=NOW)
+    account, _ = ap_dir.load_account("kim", M.SHADOW_PORTFOLIO)
+    assert account.positions["NVDA"].quantity == pytest.approx(2)
+    assert status["baseline"]["NVDA"] == 10
+
 
 
 # ---------- 차트 ----------
