@@ -53,6 +53,12 @@ def market_open(ticker: str, now=None) -> bool:
     return local.weekday() < 5 and start <= local.time() < end
 
 
+def fractional_buy_body(ticker: str, amount_krw: float) -> dict:
+    """해외주식 소수점 매수 — 원화 금액 기준, 유사시장가(SKAM2201)."""
+    return {"trd_dl_ccd": "02", "is_cd": ticker.upper(), "amt_q_clsf": "0", "frgn_ordr_typ_cd": "E",
+            "crncy_ccd": "0", "ordr_amt": str(int(amount_krw))}
+
+
 def kr_tick_floor(price: float) -> int:
     """국내 주식 호가 단위로 내림(2023 개편 기준, 코스피·코스닥 공통)."""
     p = int(price)
@@ -267,7 +273,8 @@ class KbBroker(BaseBroker):
         return (num(row.get("now_prc_krw_p2")) or None) if row else None
 
     # ---- 주문 ----
-    def execute_order(self, ticker: str, action: str, quantity: float) -> dict:
+    def execute_order(self, ticker: str, action: str, quantity: float, amount_krw: float = 0.0) -> dict:
+        """amount_krw: 미국 소수점 매수는 원화 금액으로 주문한다(계좌에 달러가 없어도 되게)."""
         action = action.lower()
         if action not in ("buy", "sell"):
             return OrderResult("error", f"알 수 없는 주문 방향: {action}").to_dict()
@@ -306,13 +313,15 @@ class KbBroker(BaseBroker):
                     "frgn_ordr_q": str(int(quantity)),
                     "frgn_ordr_prc_p4": "0",
                 })
+            elif action == "buy" and amount_krw >= 1_000:
+                body = self._post("SKAM2201", fractional_buy_body(ticker, amount_krw))
             else:
                 body = self._post("SKAM2201", {
                     "trd_dl_ccd": "02" if action == "buy" else "01",
                     "is_cd": ticker.upper(),
                     "amt_q_clsf": "1",           # 수량 기준
                     "frgn_ordr_typ_cd": "E",     # 유사시장가
-                    "crncy_ccd": "1",
+                    "crncy_ccd": "0",            # 원화 결제
                     "ordr_amt": "0",
                     "dcml_ordr_q_p6": f"{quantity:.6f}",
                 })
@@ -436,6 +445,20 @@ class KbBroker(BaseBroker):
                     "order_no": order_no}
         return {"ok": True, "message": f"{ticker} 1주 {limit:g} 지정가 주문·미체결 확인({'예' if seen else '목록에 안 보임'})·취소 완료",
                 "order_no": order_no, "seen_open": seen}
+
+    def fractional_test(self, ticker: str = "AAPL", amount_krw: int = 2_000) -> dict:
+        """실제 소수점 매수 한 건(약 2천원). 사용자가 승인한 실체결 시험(2026-10-09) — 그 주식은 계좌에 남는다."""
+        if self.dry_run:
+            return {"ok": True, "message": "[DRY-RUN] 소수점 시험 안 보냄", "order_no": ""}
+        try:
+            body = self._post("SKAM2201", fractional_buy_body(ticker, amount_krw))
+        except (KbApiError, requests.RequestException) as e:
+            return {"ok": False, "step": "fractional", "message": f"소수점 주문 실패: {e}"}
+        order_no = str(body.get("ordr_no", "")).strip()
+        if not order_no.strip("0"):
+            return {"ok": False, "step": "fractional", "message": str(body.get("o_msg", "")).strip() or "소수점 주문 거절"}
+        return {"ok": True, "message": f"{ticker} 소수점 {amount_krw:,}원 매수 접수 (주문번호 {order_no})",
+                "order_no": order_no, "reserved": str(body.get("rsrv_ordr_f", "")).strip() == "1"}
 
     def cancel(self, ticker: str, order_no: str, quantity: float = 0) -> dict:
         if self.dry_run:

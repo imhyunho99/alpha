@@ -41,8 +41,9 @@ class LiveBroker:
     def open_orders(self, now=None):
         return list(self._open)
 
-    def execute_order(self, ticker, action, quantity):
+    def execute_order(self, ticker, action, quantity, amount_krw=0.0):
         self.orders.append((ticker, action, quantity))
+        self.amounts = getattr(self, "amounts", []) + [amount_krw]
         return {"status": "success", "message": "접수", "order_no": f"N{len(self.orders)}"}
 
 
@@ -262,3 +263,43 @@ def test_kb_self_test_places_cheap_limit_then_cancels(monkeypatch):
     order = next(b for a, b in calls if a == "ssam1802")
     assert order["ordr_uprc"] == "207000" and order["ordr_ccd"] == "00" and order["ordr_q"] == "1"
     assert any(a == "ssam1806" for a, _ in calls)
+
+
+
+class FracBroker(TestedBroker):
+    def __init__(self, frac_ok=True, **kw):
+        super().__init__(**kw)
+        self.frac_ok, self.frac_calls = frac_ok, 0
+
+    def fractional_test(self, ticker="AAPL", amount_krw=2000):
+        self.frac_calls += 1
+        return {"ok": self.frac_ok, "message": "소수점 미신청" if not self.frac_ok else "접수", "step": "fractional"}
+
+
+US_OPEN = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)
+
+
+def test_us_opens_only_after_real_fractional_test_and_buys_by_krw_amount(env):
+    mirror, _, cfg = env
+    acct, prices = _shadow()
+    b = FracBroker()
+    mirror.sync("kim", "my-kb", cfg, acct, prices, US_OPEN, broker=b)
+    assert b.tests == ["F"] and b.frac_calls == 1
+    assert ("NVDA", "buy") in [(o[0], o[1]) for o in b.orders]
+    assert max(b.amounts) > 0                                 # 미국 매수는 원화 금액으로
+
+
+def test_failed_fractional_test_blocks_us(env):
+    mirror, _, cfg = env
+    acct, prices = _shadow()
+    b = FracBroker(frac_ok=False)
+    mirror.sync("kim", "my-kb", cfg, acct, prices, US_OPEN, broker=b)
+    st = mirror.load_state("kim", "my-kb")
+    assert not b.orders and "소수점" in st["blocked"]["US"]["reason"]
+
+
+def test_kb_fractional_bodies():
+    from alpha_server.brokers.kb_broker import fractional_buy_body
+
+    assert fractional_buy_body("aapl", 2000.7) == {"trd_dl_ccd": "02", "is_cd": "AAPL", "amt_q_clsf": "0",
+                                                   "frgn_ordr_typ_cd": "E", "crncy_ccd": "0", "ordr_amt": "2000"}
