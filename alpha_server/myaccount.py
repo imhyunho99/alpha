@@ -357,14 +357,20 @@ def shadow_status(username: str, portfolio: str = SHADOW_PORTFOLIO) -> dict:
     state = mirror.load_state(username, portfolio)
     opts = mirror.settings(cfg) or {}
     return {"exists": True, "portfolio": portfolio, "active": bool(cfg.get("active")),
+            "sleeve": bool(cfg.get("sleeve")), "baseline": cfg.get("baseline", {}),
             "temperature": cfg.get("temperature"), "seeded_at": cfg.get("seeded_at"),
             "dry_run": opts.get("dry_run", True), "last_sync": state.get("last"),
             "orders": list(reversed(state.get("orders", [])[-40:]))}
 
 
 def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADOW_TEMPERATURE,
-                portfolio: str = SHADOW_PORTFOLIO, broker=None, now: Optional[datetime] = None) -> dict:
+                portfolio: str = SHADOW_PORTFOLIO, broker=None, now: Optional[datetime] = None,
+                sleeve: bool = True) -> dict:
     """실계좌 잔고로 모의 포트폴리오를 만들거나 다시 맞춘다. 주문은 하지 않는다.
+
+    sleeve=True(기본, 사용자 결정 10/9): '새 돈만' 운용. 지금 보유 종목은 기준 보유분으로 묶고 절대 팔지 않는다.
+    그림자 계좌는 현금(지금 예수금 + 이후 입금)으로 시작한다. 이미 있으면 그림자 몫은 그대로 두고 기준 보유분만
+    '실계좌 − 그림자 몫'으로 다시 잡는다.
 
     시작가(avg_price)는 매입가가 아니라 지금 가격이다. 손절·익절·손실 브레이크는 에이전트가 계좌를
     넘겨받은 시점부터 잰다. 실측(10/5): 매입가를 쓰면 보유 4종목이 모두 -7% 손절선 아래라 첫 실행에
@@ -385,11 +391,25 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
     if snap.get("error"):
         raise RuntimeError(snap["error"])
 
-    account = PaperAccount(cash=float(snap.get("cash") or 0) + float(snap.get("foreign_cash_krw") or 0))
-    for p in snap.get("positions", []):
-        if p["quantity"] > 0 and p.get("value_krw"):
-            account.positions[p["ticker"]] = Position(p["ticker"], float(p["quantity"]),
-                                                      float(p["value_krw"]) / float(p["quantity"]))
+    real_cash = float(snap.get("cash") or 0) + float(snap.get("foreign_cash_krw") or 0)
+    real_qty = {p["ticker"]: float(p["quantity"]) for p in snap.get("positions", []) if p["quantity"] > 0}
+    baseline: dict[str, float] = {}
+    existing_cfg = ap_store.load_config(username, portfolio)
+    existing, _ = ap_store.load_account(username, portfolio) if existing_cfg.get("shadow_of") else (None, None)
+    if sleeve and existing is not None and existing_cfg.get("sleeve"):
+        account = existing   # 다시 맞추기: 에이전트 몫은 그대로
+        baseline = {t: q - (account.positions[t].quantity if t in account.positions else 0.0)
+                    for t, q in real_qty.items()}
+        baseline = {t: q for t, q in baseline.items() if q > 1e-6}
+    elif sleeve:
+        account = PaperAccount(cash=real_cash)
+        baseline = dict(real_qty)
+    else:
+        account = PaperAccount(cash=real_cash)
+        for p in snap.get("positions", []):
+            if p["quantity"] > 0 and p.get("value_krw"):
+                account.positions[p["ticker"]] = Position(p["ticker"], float(p["quantity"]),
+                                                          float(p["value_krw"]) / float(p["quantity"]))
     total = account.cash + sum(pos.quantity * pos.avg_price for pos in account.positions.values())
 
     # 스타일: 쓰고 있는 뉴스 포트폴리오의 문장을 그대로 쓰고, 지금 보유 종목은 관심 종목에 더한다
@@ -400,20 +420,25 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
             base = nd_store.load_style(username, name)
             break
     style = base or StyleProfile()
-    style.focus_tickers = list(dict.fromkeys(style.focus_tickers + list(account.positions)))
-    style.notes = list(style.notes) + [f"실계좌 보유 종목을 관심 종목에 포함: {', '.join(account.positions)}"]
+    if not sleeve:
+        style.focus_tickers = list(dict.fromkeys(style.focus_tickers + list(account.positions)))
+        style.notes = list(style.notes) + [f"실계좌 보유 종목을 관심 종목에 포함: {', '.join(account.positions)}"]
+    else:
+        style.notes = list(style.notes) + [f"새 돈만 운용 — 기존 보유 {len(baseline)}종목은 건드리지 않음"]
 
     with ap_store.portfolio_lock(username, portfolio):
         ap_store.save_config(username, {
             "temperature": int(temperature), "capital": round(total), "active": True, "horizon": "medium",
             "mode": "news", "portfolio": portfolio, "shadow_of": broker_name, "seeded_at": now.isoformat(),
             "broker": {"name": broker_name, "dry_run": True},
+            "sleeve": bool(sleeve), "baseline": baseline,
         }, portfolio)
         ap_store.save_account(username, account, None, portfolio, last_tracked_at=now)
-        nd_store.save_style(username, portfolio, style)
-        nd_store.save_weights(username, portfolio,
-                              WeightState(trust={}, pending=[], peak_equity=total, history=[]))
-        nd_store.save_tilts(username, portfolio, {})
+        if not (sleeve and existing is not None and existing_cfg.get("sleeve")):
+            nd_store.save_style(username, portfolio, style)
+            nd_store.save_weights(username, portfolio,
+                                  WeightState(trust={}, pending=[], peak_equity=total, history=[]))
+            nd_store.save_tilts(username, portfolio, {})
 
     from . import audit_log
 

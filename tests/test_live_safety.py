@@ -303,3 +303,43 @@ def test_kb_fractional_bodies():
 
     assert fractional_buy_body("aapl", 2000.7) == {"trd_dl_ccd": "02", "is_cd": "AAPL", "amt_q_clsf": "0",
                                                    "frgn_ordr_typ_cd": "E", "crncy_ccd": "0", "ordr_amt": "2000"}
+
+
+
+# ---------- 새 돈만 운용 (sleeve) ----------
+
+def test_sleeve_view_and_baseline():
+    from alpha_server.autopilot.mirror import sleeve_view, update_baseline
+
+    real = {"total_value": 5_000_000, "positions": [
+        {"ticker": "GOOGL", "quantity": 4.3, "value_krw": 2_000_000},
+        {"ticker": "005930.KS", "quantity": 4, "value_krw": 1_100_000}]}
+    view = sleeve_view(real, {"GOOGL": 4, "005930.KS": 4}, 1_000_000, {"GOOGL": 465_000.0})
+    assert view["total_value"] == 1_000_000
+    assert [(p["ticker"], round(p["quantity"], 3)) for p in view["positions"]] == [("GOOGL", 0.3)]
+    prev = {"cash": 0, "qty": {"GOOGL": 4.3, "005930.KS": 4}}
+    after = {"positions": [{"ticker": "GOOGL", "quantity": 4.3}, {"ticker": "005930.KS", "quantity": 2}]}
+    # 사용자가 삼성전자 2주를 직접 팔았다 → 기준 보유분이 줄고, 에이전트 몫으로 오해하지 않는다
+    assert update_baseline({"GOOGL": 4, "005930.KS": 4}, prev, after, ours={"GOOGL"}) == {"GOOGL": 4, "005930.KS": 2}
+
+
+def test_sleeve_never_sells_baseline_and_sizes_from_shadow(env):
+    mirror, store, cfg = env
+    cfg = {**cfg, "sleeve": True, "baseline": {"005930.KS": 10, "GOOGL": 4}}
+    store.save_config("kim", cfg, "my-kb")
+    acct = PaperAccount(cash=1_000_000)                       # 그림자: 100만원, 아직 아무것도 없음
+    prices = {"005930.KS": 270_000.0, "GOOGL": 465_000.0, "NVDA": 250_000.0}
+    acct.buy("NVDA", 100_000, 250_000, prices, 1.0)
+    b = LiveBroker(total=6_000_000, cash=1_000_000, positions=[
+        {"ticker": "005930.KS", "quantity": 10, "value_krw": 2_700_000},
+        {"ticker": "GOOGL", "quantity": 4, "value_krw": 1_860_000}])
+    mirror.sync("kim", "my-kb", cfg, acct, prices, datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc), broker=b)
+    assert not [o for o in b.orders if o[1] == "sell"]        # 기준 보유분은 팔지 않는다
+    nvda = [o for o in b.orders if o[0] == "NVDA"]
+    assert nvda and nvda[0][2] * 250_000 == pytest.approx(100_000, rel=0.05)   # 실계좌 600만이 아니라 그림자 100만 기준
+
+
+def test_small_account_engine_still_trades():
+    from alpha_server.newsdesk.engine import min_trade
+
+    assert min_trade(10_000_000) == 50_000 and min_trade(1_000_000) == 10_000 and min_trade(100_000) == 5_000

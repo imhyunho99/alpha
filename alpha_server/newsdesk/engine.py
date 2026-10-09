@@ -30,6 +30,14 @@ from .signals import (
 TOLERANCE = 0.10
 # 이 이하 금액은 거래하지 않는다(원).
 MIN_TRADE_KRW = 50_000
+
+
+def min_trade(equity: float) -> float:
+    """최소 거래 금액. 1,000만원 계좌는 5만원 그대로, 작은 계좌는 1%(최소 5천원).
+
+    실측(10/9): 실계좌 '새 돈만' 운용(100만원)이면 한 칸이 2~3만원이라 5만원 기준으로는 아무것도 못 샀다.
+    """
+    return min(MIN_TRADE_KRW, max(5_000.0, equity * 0.01))
 # "sell" 반응을 발동시키는 악재 강도
 SELL_RULE_SENTIMENT = -0.3
 # "실적 호재면 적극 매수" 같은 규칙은 기사 한 건으로 발동한다. 그래서 문턱이 높다.
@@ -514,6 +522,7 @@ def _core_satellite(account, profile, style, weights, snapshot, at, journal, dec
     core = [t for t in (style.focus_tickers or watch) if t not in style.avoid_tickers and t in snapshot]
     core_set = set(core)
     equity = account.equity(snapshot)
+    min_krw = min_trade(equity)
     deployable = equity * (100.0 - profile.cash_floor_pct) / 100.0 * profile.max_leverage * exposure
     share = core_share(profile.temperature, style.news_pct)
     cap_pct = min(style.max_position_pct, profile.max_position_pct) if style.max_position_pct else profile.max_position_pct
@@ -585,7 +594,7 @@ def _core_satellite(account, profile, style, weights, snapshot, at, journal, dec
     #    같은 스텝에서 호재로 35만원 다시 샀다.
     budget = max(0, style.max_daily_buys - buys_today)
     open_slots = SATELLITE_SLOTS - sum(1 for v in tilts.values() if v["dir"] > 0 and at < v["until"])
-    if budget > 0 and open_slots > 0 and sat_slot >= MIN_TRADE_KRW:
+    if budget > 0 and open_slots > 0 and sat_slot >= min_krw:
         ranked: list[tuple[float, str, list, float]] = []
         for t in universe:
             if t in style.avoid_tickers or snapshot.get(t) is None:
@@ -627,7 +636,7 @@ def _core_satellite(account, profile, style, weights, snapshot, at, journal, dec
             gap = goal - (held.quantity * price if held else 0.0)
             all_parts = scores.get(t, (0.0, []))[1]
             acted.update(acted_key(p.item) for p in all_parts)
-            if gap <= max(goal * TOLERANCE, MIN_TRADE_KRW):
+            if gap <= max(goal * TOLERANCE, min_krw):
                 del tilts[t]   # 이미 상한까지 들고 있다
                 continue
             fill = _buy(account, t, gap, price, snapshot, profile.max_leverage, params,
@@ -661,7 +670,7 @@ def _core_satellite(account, profile, style, weights, snapshot, at, journal, dec
         goal = target(t, price)
         current = account.positions[t].quantity * price
         excess = current - goal
-        if excess <= max(goal * params.band, MIN_TRADE_KRW):
+        if excess <= max(goal * params.band, min_krw):
             continue
         fill = _sell(account, t, excess / price, price, params)
         if not fill:
@@ -686,7 +695,7 @@ def _core_satellite(account, profile, style, weights, snapshot, at, journal, dec
         goal = target(t, price)
         held = account.positions.get(t)
         gap = goal - (held.quantity * price if held else 0.0)
-        if gap <= max(goal * params.band, MIN_TRADE_KRW):
+        if gap <= max(goal * params.band, min_krw):
             continue
         fill = _buy(account, t, gap, price, snapshot, profile.max_leverage, params,
                         limit=per_cap - (held.quantity * price if held else 0.0))

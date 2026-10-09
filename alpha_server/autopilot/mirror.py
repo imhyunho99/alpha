@@ -89,7 +89,7 @@ def due(username: str, portfolio: str, cfg: dict, traded: bool, now: datetime) -
 
 
 def plan(paper_weights: dict[str, float], real: dict, price_krw: dict[str, float],
-         max_position_pct: float) -> list[dict]:
+         max_position_pct: float, min_order: float = MIN_ORDER_KRW) -> list[dict]:
     """목표 비중과 실계좌 잔고 → 주문 목록(매도 먼저). 순수 함수 — 테스트가 직접 부른다."""
     equity = float(real.get("total_value") or 0.0)
     held = {p["ticker"]: p for p in real.get("positions", [])}
@@ -102,7 +102,7 @@ def plan(paper_weights: dict[str, float], real: dict, price_krw: dict[str, float
         target = equity * weight
         current = float(held[t]["value_krw"]) if t in held else 0.0
         diff = target - current
-        if abs(diff) <= max(target * BAND, MIN_ORDER_KRW):
+        if abs(diff) <= max(target * BAND, min_order):
             continue
         korean = t.upper().endswith((".KS", ".KQ"))
         qty = abs(diff) / price
@@ -138,6 +138,35 @@ def cash_flow(prev: Optional[dict], real: dict, price_krw: dict[str, float]) -> 
             swapped += dq * price_krw[t]
     flow = (cash - float(prev.get("cash", 0))) + swapped
     return flow if abs(flow) >= FLOW_MIN_KRW else 0.0
+
+
+def sleeve_view(real: dict, baseline: dict[str, float], equity: float, price_krw: dict[str, float]) -> dict:
+    """'새 돈만' 운용: 기준 보유분을 뺀 실계좌. 에이전트는 이 몫만 사고판다(기준 보유분은 절대 팔지 않음).
+
+    총액은 실계좌가 아니라 그림자 계좌 평가액 — 사용자가 기존 종목을 직접 팔아 생긴 현금을 쓰지 않게.
+    """
+    positions = []
+    for p in real.get("positions", []):
+        extra = float(p["quantity"]) - float(baseline.get(p["ticker"], 0.0))
+        if extra > 1e-6:
+            price = price_krw.get(p["ticker"]) or (float(p["value_krw"]) / float(p["quantity"]))
+            positions.append({**p, "quantity": extra, "value_krw": extra * price})
+    return {"total_value": equity, "positions": positions}
+
+
+def update_baseline(baseline: dict[str, float], prev: Optional[dict], real: dict, ours: set[str]) -> dict[str, float]:
+    """사용자가 직접 사고판 수량을 기준 보유분에 반영한다. 우리가 주문한 종목(ours)의 변화는 에이전트 몫."""
+    if not prev:
+        return baseline
+    out = dict(baseline)
+    qty_now = {p["ticker"]: float(p["quantity"]) for p in real.get("positions", [])}
+    for t in set(qty_now) | set(prev.get("qty", {})):
+        if t in ours:
+            continue
+        dq = qty_now.get(t, 0.0) - float(prev.get("qty", {}).get(t, 0.0))
+        if abs(dq) > 1e-6:
+            out[t] = max(0.0, out.get(t, 0.0) + dq)
+    return {t: q for t, q in out.items() if q > 1e-6}
 
 
 def _real_marker(real: dict) -> dict:
@@ -180,7 +209,8 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
             if p["ticker"] not in price_krw and p["quantity"] > 0:
                 price_krw[p["ticker"]] = float(p["value_krw"]) / float(p["quantity"])
         # 입출금: 실계좌에 돈이 들어오거나 나가면 모의(그림자) 계좌의 현금도 같이 맞춘다
-        flow = cash_flow(state.get("last_real"), real, price_krw)
+        prev_real = state.get("last_real")
+        flow = cash_flow(prev_real, real, price_krw)
         # 국내 주식은 결제가 D+2 라 실주문 직후엔 주식만 늘고 예수금은 그대로 보인다 — 입금으로 오인한다.
         # 최근 3일 안에 실주문이 있었으면 자동 반영하지 않는다(그땐 '지금 잔고로 다시 맞추기').
         last_live = state.get("last_live_order_at")
@@ -198,7 +228,19 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
             summary["flow"] = round(flow)
             audit_log.record("trade", "broker_mirror_cash_flow", actor=f"{username}/{portfolio}", amount=round(flow))
         rm = RiskManager(broker=broker)
-        orders = plan(weights, real, price_krw, rm.config.max_position_pct)
+        view = real
+        if cfg.get("sleeve"):
+            ours = set(state.get("pending", {})) | {o["ticker"] for o in state.get("orders", [])[-50:]
+                                                    if o.get("status") == "success" and not o.get("dry_run", True)}
+            baseline = update_baseline(cfg.get("baseline", {}), prev_real, real, ours)
+            if baseline != cfg.get("baseline", {}):
+                cfg = {**cfg, "baseline": baseline}
+                store.save_config(username, cfg, portfolio)
+            view = sleeve_view(real, baseline, account.equity(prices), price_krw)
+        from ..newsdesk.engine import min_trade
+
+        orders = plan(weights, view, price_krw, rm.config.max_position_pct,
+                      min_order=min_trade(float(view.get("total_value") or 0)))
         live = not opts["dry_run"]
         if live:
             # 체결을 기다리는 주문: 잔고에 반영됐으면 지우고, 아니면 그 종목은 이번에 다시 주문하지 않는다
