@@ -399,15 +399,28 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
     existing, _ = ap_store.load_account(username, portfolio) if existing_cfg.get("shadow_of") else (None, None)
     principal = float(existing_cfg.get("principal") or 0) if existing_cfg.get("sleeve") else 0.0
     if sleeve and existing is not None and existing_cfg.get("sleeve"):
-        # 입금을 다시 맞추기로 반영할 때 넣은 돈 누계도 늘린다(현금이 줄어든 건 에이전트 매수라 원금이 아니다)
-        principal += max(0.0, real_cash - existing.cash) if not _recent_live_orders(username, portfolio, now) else 0.0
-        account = existing   # 다시 맞추기: 에이전트 몫(보유 종목)은 그대로
-        # '새 돈만' 운용에서 계좌의 현금은 전부 에이전트 몫이다. 입금 직후 이걸 눌러 바로 반영한다
-        # (자동 감지는 다음 연동 때, 실주문 직후 3일은 보류).
-        account.cash = real_cash
-        baseline = {t: q - (account.positions[t].quantity if t in account.positions else 0.0)
-                    for t, q in real_qty.items()}
-        baseline = {t: q for t, q in baseline.items() if q > 1e-6}
+        # 다시 맞추기는 실계좌가 기준이다: 에이전트 몫 = 실계좌 − 기준 보유분, 현금 = 실계좌 현금.
+        # 실측(10/9): 기록 모드에서 그림자가 산 주식(실제론 없음)을 남긴 채 현금만 실계좌로 덮어써 장부가 이중으로
+        # 잡혔고, 그 차이를 '입금'으로 원금에 더했다(1,063,707 → 2,611,885).
+        old_base = {t: float(q) for t, q in (existing_cfg.get("baseline") or {}).items()}
+        prices = {p["ticker"]: float(p["value_krw"]) / float(p["quantity"])
+                  for p in snap.get("positions", []) if p["quantity"] > 0 and p.get("value_krw")}
+        account = PaperAccount(cash=real_cash)
+        for t, q in real_qty.items():
+            mine = q - old_base.get(t, 0.0)
+            if mine > 1e-6 and t in prices:
+                prev = existing.positions.get(t)
+                account.positions[t] = Position(t, mine, prev.avg_price if prev else prices[t])
+        baseline = {t: min(q, real_qty.get(t, 0.0)) for t, q in old_base.items() if real_qty.get(t, 0.0) > 1e-6}
+        # 원금은 입출금으로만 바뀐다 — 지난 연동 이후의 입출금을 여기서 반영
+        from .autopilot import mirror
+
+        state = mirror.load_state(username, portfolio)
+        flow = mirror.cash_flow(state.get("last_real"), snap, prices)
+        if flow and not _recent_live_orders(username, portfolio, now):
+            principal += flow
+        state["last_real"] = mirror._real_marker(snap)
+        mirror._save_state(username, portfolio, state)
     elif sleeve:
         account = PaperAccount(cash=real_cash)
         baseline = dict(real_qty)
