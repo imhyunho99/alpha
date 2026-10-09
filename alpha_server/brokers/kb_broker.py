@@ -38,6 +38,30 @@ def kr_code(ticker: str) -> str:
     return code[1:] if code[:1].upper() == "A" and code[1:].isdigit() else code
 
 
+def market_open(ticker: str, now=None) -> bool:
+    """정규장 시간인가. 공휴일은 모른다 — 그날 주문은 KB 가 거절하고, 연동이 그 거절을 기록한다."""
+    from datetime import datetime, time as dtime, timezone
+    from zoneinfo import ZoneInfo
+
+    now = now or datetime.now(timezone.utc)
+    if is_korean(ticker):
+        local = now.astimezone(ZoneInfo("Asia/Seoul"))
+        start, end = dtime(9, 0), dtime(15, 20)      # 15:20 이후는 종가 단일가 — 시장가 주문을 피한다
+    else:
+        local = now.astimezone(ZoneInfo("America/New_York"))
+        start, end = dtime(9, 30), dtime(15, 55)
+    return local.weekday() < 5 and start <= local.time() < end
+
+
+def kr_tick_floor(price: float) -> int:
+    """국내 주식 호가 단위로 내림(2023 개편 기준, 코스피·코스닥 공통)."""
+    p = int(price)
+    for bound, tick in ((2_000, 1), (5_000, 5), (20_000, 10), (50_000, 50), (200_000, 100), (500_000, 500)):
+        if p < bound:
+            return p - p % tick
+    return p - p % 1_000
+
+
 def num(value) -> float:
     """KB 응답 숫자는 앞뒤 공백·앞자리 0 이 붙은 문자열이다(예: " 209.6700", "000360000")."""
     if value is None:
@@ -130,7 +154,7 @@ def _kb_message(data) -> str:
 class KbBroker(BaseBroker):
     def __init__(self, app_key: str, app_secret: str, dry_run: bool = True,
                  base_url: str = KB_BASE, session: Optional[requests.Session] = None,
-                 suffix_fn=None) -> None:
+                 suffix_fn=None, now_fn=None) -> None:
         self.app_key = app_key
         self.app_secret = app_secret
         self.dry_run = dry_run
@@ -140,6 +164,7 @@ class KbBroker(BaseBroker):
         self._token_exp = 0.0
         self._exchange: dict[str, str] = {}
         self._suffix = suffix_fn or kr_suffix
+        self._now = now_fn or (lambda: None)
         self.ip, self.mac = _local_addr()
 
     # ---- 통신 ----
@@ -260,6 +285,9 @@ class KbBroker(BaseBroker):
                 message=f"[DRY-RUN] KB {ticker} {action} {quantity:g}주 (주문 안 보냄)",
                 ticker=ticker, action=action, quantity=quantity,
             ).to_dict()
+        if not market_open(ticker, self._now()):
+            return OrderResult("market_closed", "장 시간이 아니라 주문하지 않음",
+                               ticker=ticker, action=action, quantity=quantity).to_dict()
 
         try:
             if korean:
@@ -338,6 +366,91 @@ class KbBroker(BaseBroker):
         total = num(dom.get("nt_asts_val_amt")) or (cash + foreign_cash + sum(p["value_krw"] for p in positions))
         return {"broker": "kb", "currency": "KRW", "cash": cash, "foreign_cash_krw": foreign_cash,
                 "positions": positions, "total_value": total}
+
+    # ---- 미체결·취소·시험 주문 (실주문 안전장치) ----
+    def open_orders(self, now=None) -> list[dict]:
+        """오늘(국내)·최근 2일(해외) 미체결 주문. 연동이 같은 종목을 또 주문하지 않게 쓴다."""
+        from datetime import datetime, timedelta, timezone
+
+        now = now or datetime.now(timezone.utc)
+        kst = now.astimezone(timezone(timedelta(hours=9)))
+        out = []
+        for r in self._paged("SSQM2341", {"ccls_clsf": "2", "ordr_dt": kst.strftime("%Y%m%d")}, max_pages=5):
+            left = num(r.get("nccls_q"))
+            raw = str(r.get("stnd_is_no", "")).strip()
+            # 표준코드(ISIN) KR7005930003 → 단축코드 005930 (4번째 글자부터 6자리)
+            code = raw[3:9] if len(raw) == 12 and raw.startswith("KR") else kr_code(raw[-6:]) if raw else ""
+            if left > 0 and code:
+                out.append({"ticker": f"{code}{self._suffix(code)}", "order_no": str(r.get("ordr_no", "")).strip(),
+                            "remaining": left})
+        start = (kst - timedelta(days=2)).strftime("%Y%m%d")
+        for r in self._paged("SPQM2204", {"strt_ordr_dt": start, "end_ordr_dt": kst.strftime("%Y%m%d"),
+                                          "ccls_clsf": "2", "trd_clsf": "99"}, max_pages=5):
+            left = num(r.get("nccls_q_p6"))
+            if left > 0:
+                out.append({"ticker": str(r.get("shrt_is_cd", "")).strip().upper(),
+                            "order_no": str(r.get("ordr_no", "")).strip(), "remaining": left})
+        return out
+
+    def place_limit(self, ticker: str, action: str, quantity: float, price: float) -> dict:
+        """지정가 주문. 실주문 시험(체결되지 않을 가격으로 냈다가 취소)에 쓴다. dry_run 이면 보내지 않는다."""
+        if self.dry_run:
+            return {"status": "success", "message": "[DRY-RUN] 지정가 주문 안 보냄", "order_no": ""}
+        try:
+            if is_korean(ticker):
+                body = self._post("SSAM1802" if action == "buy" else "SSAM1801", {
+                    "mkt_tm_clsf": "1", "is_cd": kr_code(ticker), "ordr_q": str(int(quantity)),
+                    "ordr_uprc": str(int(price)), "ordr_ccd": "00"})
+            else:
+                body = self._post("SKAM2101", {
+                    "trd_dl_ccd": "02" if action == "buy" else "01", "is_cd": ticker.upper(),
+                    "frgn_ordr_typ_cd": "2", "frgn_ordr_q": str(int(quantity)), "frgn_ordr_prc_p4": f"{price:.2f}"})
+        except (KbApiError, requests.RequestException) as e:
+            return {"status": "error", "message": str(e), "order_no": ""}
+        order_no = str(body.get("ordr_no", "")).strip()
+        return {"status": "success" if order_no.strip("0") else "error",
+                "message": str(body.get("o_msg", "")).strip(), "order_no": order_no}
+
+    def self_test(self, ticker: str, now=None) -> dict:
+        """실주문 첫 시험: 체결되지 않을 가격으로 1주 지정가 매수 → 미체결 확인 → 취소 → 미체결 사라짐 확인.
+
+        국내는 현재가의 75%(가격제한폭 -30% 안, 호가 단위 맞춤), 해외는 50%. 돈은 쓰이지 않는다.
+        """
+        import time as _time
+
+        price = self.get_current_price(ticker)
+        if not price:
+            return {"ok": False, "step": "price", "message": f"{ticker} 시세를 못 읽음"}
+        limit = kr_tick_floor(price * 0.75) if is_korean(ticker) else round(price * 0.5, 2)
+        placed = self.place_limit(ticker, "buy", 1, limit)
+        if placed["status"] != "success":
+            return {"ok": False, "step": "order", "message": placed["message"] or "주문 거절"}
+        order_no = placed["order_no"]
+        _time.sleep(2)
+        seen = any(o["order_no"].lstrip("0") == order_no.lstrip("0") for o in self.open_orders(now))
+        cancelled = self.cancel(ticker, order_no, 1)
+        _time.sleep(2)
+        still = any(o["order_no"].lstrip("0") == order_no.lstrip("0") for o in self.open_orders(now))
+        if cancelled["status"] != "success" or still:
+            return {"ok": False, "step": "cancel", "message": f"취소 확인 실패 — 주문번호 {order_no} 를 KB 앱에서 확인하세요",
+                    "order_no": order_no}
+        return {"ok": True, "message": f"{ticker} 1주 {limit:g} 지정가 주문·미체결 확인({'예' if seen else '목록에 안 보임'})·취소 완료",
+                "order_no": order_no, "seen_open": seen}
+
+    def cancel(self, ticker: str, order_no: str, quantity: float = 0) -> dict:
+        if self.dry_run:
+            return {"status": "success", "message": "[DRY-RUN] 취소 안 보냄"}
+        try:
+            if is_korean(ticker):
+                body = self._post("SSAM1806", {"is_cd": kr_code(ticker), "crct_clsf": "2",
+                                               "orgn_ordr_no": order_no, "ordr_q": str(int(quantity or 0))})
+            else:
+                body = self._post("SKAM2102", {"crct_cncl_clsf": "2", "is_cd": ticker.upper(),
+                                               "orgn_ordr_no": order_no, "frgn_ordr_prc_p4": "0"})
+        except (KbApiError, requests.RequestException) as e:
+            return {"status": "error", "message": str(e)}
+        return {"status": "success" if str(body.get("ordr_no", "")).strip("0 ") else "error",
+                "message": str(body.get("o_msg", "")).strip()}
 
     # ---- 기록 (조회 전용) ----
     def _paged(self, api: str, body: dict, record: str = "Record1", max_pages: int = 20) -> list[dict]:
