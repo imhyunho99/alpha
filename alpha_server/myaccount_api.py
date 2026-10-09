@@ -25,6 +25,7 @@ def get_overview(broker: str = Query("kb", pattern=r"^(kb)$"), days: int = Query
 class ShadowPayload(BaseModel):
     broker: str = Field("kb", pattern=r"^(kb)$")
     temperature: int = Field(5, ge=1, le=7)   # 8 이상은 모의 레버리지 — 실계좌 복제에는 쓰지 않는다
+    sleeve: bool = True                        # 새 돈만 운용(기존 보유 종목은 건드리지 않음)
 
 
 @router.get("/shadow", summary="실계좌 리밸런싱(기록만) 상태와 기록된 주문")
@@ -46,7 +47,7 @@ def post_shadow(payload: ShadowPayload, user: UserPublic = Depends(require_user)
     from .newsdesk import runner
 
     try:
-        status = myaccount.seed_shadow(user.username, payload.broker, payload.temperature)
+        status = myaccount.seed_shadow(user.username, payload.broker, payload.temperature, sleeve=payload.sleeve)
     except ValueError:
         raise HTTPException(status_code=400, detail="KB증권 API 키가 등록되지 않았습니다.")
     except RuntimeError as exc:

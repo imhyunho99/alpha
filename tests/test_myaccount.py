@@ -231,7 +231,7 @@ def test_seed_shadow_copies_account_at_current_prices(ap_dir):
                         .StyleProfile(focus_tickers=["NVDA", "AMD"], raw_text="반도체"))
     ap_dir.save_config("kim", {"temperature": 5, "capital": 1e7, "active": True, "mode": "news"}, "news")
     kb, fake = _kb()
-    status = M.seed_shadow("kim", "kb", broker=kb, now=NOW)
+    status = M.seed_shadow("kim", "kb", broker=kb, now=NOW, sleeve=False)
     assert status["exists"] and status["active"] and status["dry_run"] is True
 
     cfg = ap_dir.load_config("kim", M.SHADOW_PORTFOLIO)
@@ -259,7 +259,7 @@ def test_shadow_first_step_does_not_stop_out_inherited_losers(ap_dir):
     from alpha_server.newsdesk.signals import PARAMS_LIVE
 
     kb, _ = _kb()
-    M.seed_shadow("kim", "kb", broker=kb, now=NOW)
+    M.seed_shadow("kim", "kb", broker=kb, now=NOW, sleeve=False)
     account, _ = ap_dir.load_account("kim", M.SHADOW_PORTFOLIO)
     style = nd_store.load_style("kim", M.SHADOW_PORTFOLIO)
     prices = {"005930.KS": 270_000.0, "035720.KS": 35_000.0, "NVDA": 250_000.0}
@@ -315,3 +315,23 @@ def test_shadow_text():
                      "last_sync": {"at": "2026-10-05T08:00:00", "orders": 7, "status": "ok", "message": ""}})
     assert "주문 기록만" in t and "주문 7건" in t
     assert "🔴" in shadow_text({"exists": True, "active": True, "dry_run": False, "temperature": 5})
+
+
+
+def test_sleeve_seed_keeps_existing_holdings_out(ap_dir):
+    """10/9 사용자 결정: 새 돈만 운용. 기존 종목은 기준 보유분으로 묶는다."""
+    kb, _ = _kb()
+    status = M.seed_shadow("kim", "kb", broker=kb, now=NOW)            # 기본이 sleeve
+    assert status["sleeve"] and status["baseline"] == {"005930.KS": 10, "035720.KS": 20, "NVDA": 10}
+    account, _ = ap_dir.load_account("kim", M.SHADOW_PORTFOLIO)
+    assert account.positions == {} and account.cash == pytest.approx(2_100_000)
+
+    # 다시 맞추기: 에이전트 몫(그림자 포지션)은 그대로, 기준 보유분 = 실계좌 − 그림자 몫
+    from alpha_server.autopilot.account import Position
+
+    account.positions["NVDA"] = Position("NVDA", 2, 250_000)
+    ap_dir.save_account("kim", account, None, M.SHADOW_PORTFOLIO)
+    status = M.seed_shadow("kim", "kb", broker=kb, now=NOW)
+    assert status["baseline"]["NVDA"] == 8
+    account, _ = ap_dir.load_account("kim", M.SHADOW_PORTFOLIO)
+    assert account.positions["NVDA"].quantity == 2

@@ -69,7 +69,9 @@ def shadow_text(data) -> str:
         return "아직 시작 전입니다. 시작하면 에이전트가 이 계좌를 기준으로 리밸런싱 계획을 세웁니다."
     state = "운용 중" if data.get("active") else "멈춤"
     mode = "🔴 실주문" if not data.get("dry_run", True) else "주문 기록만"
-    parts = [f"{state} · {mode} · 온도 {data.get('temperature')}",
+    scope = (f"새 돈만 운용 · 기존 {len(data.get('baseline') or {})}종목 보호" if data.get("sleeve")
+             else "계좌 전체 운용")
+    parts = [f"{state} · {mode} · {scope} · 온도 {data.get('temperature')}",
              f"시작 {str(data.get('seeded_at') or '')[:16].replace('T', ' ')}"]
     last = data.get("last_sync") or {}
     if last:
@@ -222,9 +224,9 @@ class MyAccountTab(QWidget):
 
         if QMessageBox.question(
             self, "에이전트 시작",
-            "지금 KB 계좌의 보유 종목·현금을 복제한 포트폴리오를 에이전트가 굴립니다.\n"
-            "실계좌에 필요한 주문은 '기록만' 하고 실제로 보내지 않습니다.\n"
-            "이미 시작했다면 지금 잔고로 다시 맞춥니다. 진행할까요?",
+            "에이전트가 '새 돈'(지금 예수금과 앞으로의 입금)만 운용합니다.\n"
+            "지금 보유한 종목은 기준 보유분으로 묶어 절대 팔지 않습니다.\n"
+            "이미 시작했다면 에이전트 몫은 그대로 두고 기준 보유분만 지금 잔고로 다시 잡습니다. 진행할까요?",
         ) != QMessageBox.Yes:
             return
         self.shadow_label.setText("시작하는 중…")
