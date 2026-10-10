@@ -487,8 +487,39 @@ class AlphaGUI(QMainWindow):
         self.statusBar().showMessage("⏳ 포트폴리오 분석 중...", 0)
         self._execute_and_display(core.assess_portfolio, self.format_assessment, self.portfolio_path)
 
+def _enable_crash_log() -> None:
+    """세그폴트 때 파이썬 스택을 남긴다(macOS 크래시 리포트엔 파이썬 위치가 안 나온다)."""
+    import faulthandler
+    import os
+
+    path = os.path.expanduser("~/Library/Logs/AlphaClient.crash.log")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        faulthandler.enable(open(path, "a", encoding="utf-8"), all_threads=True)
+    except OSError:
+        faulthandler.enable()
+
+
+def _collect_garbage_on_main_thread(app: QApplication) -> QTimer:
+    """순환 참조 수거를 메인 스레드에서만 한다.
+
+    실측(10/10 15:02 크래시): 파이썬 GC 가 작업 스레드에서 돌다 대화상자의 QPushButton 래퍼를 수거하면
+    PySide 가 C++ 삭제를 메인 스레드로 미루는데, 그 사이 부모가 이미 지운 버튼을 다시 지워 SIGSEGV 가 났다.
+    자동 GC 를 끄고 메인 스레드 타이머로 돌리면 수거와 Qt 삭제가 한 스레드에서 순서대로 일어난다.
+    """
+    import gc
+
+    gc.disable()
+    timer = QTimer(app)
+    timer.timeout.connect(lambda: gc.collect())
+    timer.start(5000)
+    return timer
+
+
 def start_gui():
+    _enable_crash_log()
     app = QApplication(sys.argv)
+    gc_timer = _collect_garbage_on_main_thread(app)  # noqa: F841 — app 이 부모라 살아 있다
     window = AlphaGUI()
     window.show()
     sys.exit(app.exec())
