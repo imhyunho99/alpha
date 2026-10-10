@@ -46,6 +46,10 @@ def test_news_model():
         print("✗ 뉴스 모델 학습 실패")
     print()
 
+import pytest
+
+
+@pytest.mark.skipif(bool(os.getenv("CI")), reason="이 Mac 의 학습된 모델·실시간 뉴스가 필요하다 — CI 에선 건너뜀")
 def test_ensemble():
     """앙상블 예측 테스트"""
     print("=== 앙상블 예측 테스트 ===")

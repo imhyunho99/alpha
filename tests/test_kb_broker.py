@@ -293,19 +293,22 @@ def test_sync_places_orders_records_audit_and_state(mirror_env):
     assert state["last"]["orders"] == 2 and len(state["orders"]) == 2
 
 
-def test_sync_respects_daily_buy_limit(mirror_env):
+def test_sync_respects_daily_buy_limit(mirror_env, monkeypatch):
+    """실주문 모드에서만 센다(기록 모드 가상 매수는 한도에 넣지 않음 — test_live_safety)."""
     mirror, _ = mirror_env
     from datetime import date
 
     from alpha_server import risk_manager
+    from alpha_server.brokers import kb_broker
 
+    monkeypatch.setattr(kb_broker, "market_open", lambda t, now=None: True)
     # 오늘 이미 9건 샀다 — 한도 10건이면 한 건만 더 나간다
     with open(risk_manager.STATE_FILE, "w", encoding="utf-8") as f:
         json.dump({"day": date.today().isoformat(), "buys": 9, "realized_pnl": 0.0,
                    "starting_equity": 10_000_000}, f)
     acct, prices = _paper()
     broker = FakeBroker(total=10_000_000)
-    mirror.sync("kim", "news", {"broker": {"name": "kb"}}, acct, prices, NOW, broker=broker)
+    mirror.sync("kim", "news", {"broker": {"name": "kb", "dry_run": False}}, acct, prices, NOW, broker=broker)
     orders = mirror.load_state("kim", "news")["orders"]
     assert [o["status"] for o in orders].count("risk_blocked") == 1
     assert len(broker.orders) == 1

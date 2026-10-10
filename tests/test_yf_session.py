@@ -12,6 +12,7 @@
 """
 import json
 import resource
+import sys
 
 import pytest
 
@@ -115,6 +116,7 @@ def test_raise_fd_limit_reaches_target_when_hard_limit_allows(monkeypatch):
     assert kernel.requested == [4096]
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="launchd(맥)의 256 기본값 사고를 재현하는 테스트")
 def test_raise_fd_limit_lifts_the_launchd_default_of_256(monkeypatch):
     """사고 재현: launchd 가 물려준 256 에서 시작해도 4096 까지 올라가야 한다."""
     kernel = _FakeKernel(soft=256, hard=resource.RLIM_INFINITY)
