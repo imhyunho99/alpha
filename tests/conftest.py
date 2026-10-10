@@ -2,6 +2,9 @@
 
 import pytest as _pytest
 
+# 손으로 돌리는 스크립트(무한 대기). 이름이 test_ 라 모으면 수집 단계에서 멈춘다 — CI 의 --ignore 와 같은 규칙.
+collect_ignore = ["test_scheduler.py"]
+
 
 @_pytest.fixture(autouse=True)
 def _clear_kb_token_cache():
