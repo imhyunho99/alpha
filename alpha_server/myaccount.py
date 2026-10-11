@@ -398,7 +398,8 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
     existing_cfg = ap_store.load_config(username, portfolio)
     existing, _ = ap_store.load_account(username, portfolio) if existing_cfg.get("shadow_of") else (None, None)
     principal = float(existing_cfg.get("principal") or 0) if existing_cfg.get("sleeve") else 0.0
-    if sleeve and existing is not None and existing_cfg.get("sleeve"):
+    resync = bool(sleeve and existing is not None and existing_cfg.get("sleeve"))
+    if resync:
         # 다시 맞추기는 실계좌가 기준이다: 에이전트 몫 = 실계좌 − 기준 보유분, 현금 = 실계좌 현금.
         # 실측(10/9): 기록 모드에서 그림자가 산 주식(실제론 없음)을 남긴 채 현금만 실계좌로 덮어써 장부가 이중으로
         # 잡혔고, 그 차이를 '입금'으로 원금에 더했다(1,063,707 → 2,611,885).
@@ -419,6 +420,7 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
         flow = mirror.cash_flow(state.get("last_real"), snap, prices)
         if flow and not _recent_live_orders(username, portfolio, now):
             principal += flow
+            mirror.record_flow(state, now, flow)
         state["last_real"] = mirror._real_marker(snap)
         mirror._save_state(username, portfolio, state)
     elif sleeve:
@@ -453,6 +455,8 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
             "mode": "news", "portfolio": portfolio, "shadow_of": broker_name, "seeded_at": now.isoformat(),
             "broker": {"name": broker_name, "dry_run": True},
             "sleeve": bool(sleeve), "baseline": baseline, "principal": round(principal),
+            # 성과판의 시작일. '다시 맞추기'는 seeded_at 을 덮어쓰므로 처음 시작한 날을 따로 남긴다.
+            "started_at": (existing_cfg.get("started_at") if resync else now.isoformat()),
             # "allocation": 주식(SPY)/채권(IEF) 자산배분(기본, 2026-10-09 판정) | "news": 뉴스 데스크 에이전트
             "strategy": strategy,
         }, portfolio)

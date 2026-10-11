@@ -78,3 +78,15 @@ def get_history(refresh: bool = False, user: UserPublic = Depends(require_user))
     from . import account_history, myaccount
 
     return myaccount.clean_for_json(account_history.history(user.username, refresh=refresh))
+
+
+@router.get(
+    "/performance",
+    summary="에이전트 성과: 넣은 돈 대비 손익·시간가중수익률·그냥 샀다면(SPY, 60/40, 예금)·비용 추정",
+    dependencies=[Depends(rate_limit("account_performance", capacity=10, per_seconds=60))],
+)
+def get_performance(user: UserPublic = Depends(require_user)):
+    from . import account_performance, myaccount
+
+    # 계산이 일부 실패해도 부분 결과와 이유(notes)를 200 으로 돌려준다
+    return myaccount.clean_for_json(account_performance.performance(user.username, myaccount.SHADOW_PORTFOLIO))

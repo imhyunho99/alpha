@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from alpha import core
 from alpha.autopilot_widgets import _Worker
 from alpha.news_widgets import _fill, _make_table, _num, _rows
+from alpha.performance_widgets import PerformanceBox
 
 KB_OPEN_API_URL = "https://openapi.kbsec.com"
 
@@ -377,6 +378,8 @@ class MyAccountTab(QWidget):
         sb.addWidget(self.shadow_money)
         self.shadow_chart = ValueChart()
         sb.addWidget(self.shadow_chart)
+        self.performance = PerformanceBox()
+        sb.addWidget(self.performance)
         tables = QHBoxLayout()
         left_box = QVBoxLayout()
         left_box.addWidget(QLabel("에이전트가 산 종목"))
@@ -511,6 +514,8 @@ class MyAccountTab(QWidget):
         exists = isinstance(data, dict) and data.get("exists")
         self.shadow_start.setText("지금 잔고로 다시 맞추기" if exists else "내 계좌로 에이전트 시작")
         self.shadow_stop.setEnabled(bool(exists and data.get("active")))
+        if exists:
+            self.performance.load()
         chart = (data or {}).get("chart") if isinstance(data, dict) else None
         self.shadow_money.setText(chart_summary(chart or {}))
         self.shadow_chart.set_data(chart_points(chart or {}), (chart or {}).get("principal") or 0)
