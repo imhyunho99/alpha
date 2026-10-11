@@ -362,6 +362,12 @@ def set_broker(portfolio: str, name: Optional[str]) -> dict:
     return _handle_request("put", "/autopilot/broker", json={"portfolio": portfolio, "name": name})
 
 
+def set_broker_live(portfolio: str, live: bool, confirm: str = "") -> dict:
+    """실주문 켜기/끄기. 켜기는 서버가 확인 문구('실거래 전환')를 요구한다. 끄기는 문구 없이 즉시."""
+    return _handle_request("patch", "/autopilot/broker/live",
+                           json={"portfolio": portfolio, "live": bool(live), "confirm": confirm})
+
+
 def check_broker(portfolio: str, name: Optional[str] = None) -> dict:
     return _handle_request("post", "/autopilot/broker/check", json={"portfolio": portfolio, "name": name})
 
@@ -378,7 +384,7 @@ def account_shadow() -> dict:
 
 
 def start_account_shadow(temperature: int = 5) -> dict:
-    """실계좌 잔고로 에이전트를 시작하거나 다시 맞춘다. 주문은 기록만."""
+    """실계좌 잔고로 에이전트를 시작하거나 다시 맞춘다. 다시 맞출 때 실주문 여부는 서버가 그대로 유지한다."""
     return _handle_request("post", "/account/shadow", json={"broker": "kb", "temperature": temperature}, timeout=60)
 
 

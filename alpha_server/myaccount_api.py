@@ -1,6 +1,8 @@
 """내 실계좌 조회 API. 조회 전용 — 주문 엔드포인트는 없다."""
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
@@ -26,7 +28,8 @@ class ShadowPayload(BaseModel):
     broker: str = Field("kb", pattern=r"^(kb)$")
     temperature: int = Field(5, ge=1, le=7)   # 8 이상은 모의 레버리지 — 실계좌 복제에는 쓰지 않는다
     sleeve: bool = True                        # 새 돈만 운용(기존 보유 종목은 건드리지 않음)
-    strategy: str = Field("allocation", pattern=r"^(allocation|news)$")
+    # 비우면 기존 값 유지(처음이면 allocation)
+    strategy: Optional[str] = Field(None, pattern=r"^(allocation|news)$")
 
 
 @router.get("/shadow", summary="실계좌 에이전트 운용 상태·기록된 주문·차트 데이터")

@@ -1,4 +1,6 @@
-"""💼 내 계좌 탭 — 증권사 실계좌를 읽어 보여주고 분석한다. 조회 전용, 주문 버튼 없음."""
+"""💼 내 계좌 탭 — 증권사 실계좌를 읽어 보여주고 분석한다. 직접 주문 버튼은 없다.
+
+자동 리밸런싱의 실주문 켜기/끄기만 있다(켜기는 서버가 확인 문구를 요구한다)."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -9,9 +11,11 @@ from PySide6.QtWidgets import (
     QComboBox,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QSplitter,
     QVBoxLayout,
@@ -24,6 +28,8 @@ from alpha.news_widgets import _fill, _make_table, _num, _rows
 from alpha.performance_widgets import PerformanceBox
 
 KB_OPEN_API_URL = "https://openapi.kbsec.com"
+SHADOW_PORTFOLIO = "my-kb"        # 서버 myaccount.SHADOW_PORTFOLIO 와 같아야 한다
+LIVE_CONFIRM = "실거래 전환"      # 서버 autopilot/api.py LIVE_CONFIRM 과 같아야 한다
 
 KEY_GUIDE = (
     "KB증권 계좌를 읽으려면 KB증권 Open API 키가 필요합니다 (무료).\n"
@@ -268,6 +274,13 @@ def shadow_text(data) -> str:
     return " · ".join(parts)
 
 
+def shadow_mode(data) -> str:
+    """지금 실주문이 나가는지 한눈에. 그림자 계좌가 없으면 빈 문자열."""
+    if not isinstance(data, dict) or "error" in data or not data.get("exists"):
+        return ""
+    return "🔴 실주문 중" if data.get("dry_run", True) is False else "기록만 (실주문 꺼짐)"
+
+
 def habits_text(h: dict) -> str:
     if not h or not h.get("sells"):
         return "최근 1년 매도 기록이 없습니다."
@@ -360,8 +373,23 @@ class MyAccountTab(QWidget):
         layout.addWidget(self.findings)
 
         # 자동 리밸런싱 — 실계좌를 복제한 포트폴리오를 에이전트가 굴리고, 실계좌에 필요한 주문을 기록만 한다
-        self.shadow_box = QGroupBox("자동 리밸런싱 (주문 기록만 — 실제 주문은 나가지 않습니다)")
+        self.shadow_box = QGroupBox("자동 리밸런싱")
         sb = QVBoxLayout(self.shadow_box)
+        # 지금 모드를 눈에 띄게: 실주문이 나가는지 아닌지 헷갈리면 안 된다(10/11 실측: 다시 맞추기로 조용히 꺼짐)
+        mrow = QHBoxLayout()
+        self.shadow_mode = QLabel("")
+        self.shadow_mode.setStyleSheet("font-weight: bold; font-size: 15px; padding: 4px 8px;")
+        mrow.addWidget(self.shadow_mode)
+        mrow.addStretch(1)
+        self.live_on = QPushButton("실주문 켜기…")
+        self.live_on.clicked.connect(self._on_live_on)
+        mrow.addWidget(self.live_on)
+        self.live_off = QPushButton("실주문 끄기")
+        self.live_off.clicked.connect(self._on_live_off)
+        mrow.addWidget(self.live_off)
+        sb.addLayout(mrow)
+        self._shadow_data: dict = {}
+        self._set_mode({})
         srow = QHBoxLayout()
         self.shadow_start = QPushButton("내 계좌로 에이전트 시작")
         self.shadow_start.clicked.connect(self._on_shadow_start)
@@ -492,10 +520,27 @@ class MyAccountTab(QWidget):
         worker.finished.connect(lambda w=worker: self._workers.remove(w) if w in self._workers else None)
         worker.start()
 
-    def _on_shadow_start(self):
-        from PySide6.QtWidgets import QMessageBox
+    def _shadow_live(self) -> bool:
+        d = self._shadow_data
+        return bool(d.get("exists")) and d.get("dry_run", True) is False
 
-        if QMessageBox.question(
+    def _on_shadow_start(self):
+        if self._shadow_live() and not self._shadow_data.get("active"):
+            # 멈춘 계좌 재시작은 서버가 기록만으로 되돌린다 — 실주문이 조용히 다시 켜지지 않게
+            if QMessageBox.question(
+                self, "에이전트 다시 시작",
+                "멈춘 상태에서 다시 시작하면 실주문은 꺼지고 '기록만'으로 시작합니다.\n"
+                "실주문이 필요하면 시작 후 '실주문 켜기'로 다시 켜세요. 진행할까요?",
+            ) != QMessageBox.Yes:
+                return
+        elif self._shadow_live():
+            # 운용 중 다시 맞추기는 실주문을 끄지도 켜지도 않는다 — 서버가 유지한다
+            if QMessageBox.question(
+                self, "잔고 다시 맞추기",
+                "실주문은 유지됩니다. 잔고만 실계좌 기준으로 다시 맞춥니다.\n진행할까요?",
+            ) != QMessageBox.Yes:
+                return
+        elif QMessageBox.question(
             self, "에이전트 시작",
             "에이전트가 '새 돈'(지금 예수금과 앞으로의 입금)만 운용합니다.\n"
             "전략: 미국 주식(SPY) 60% / 미국 중기채(IEF) 40%, 매달 또는 5%p 벗어나면 리밸런싱.\n"
@@ -503,8 +548,44 @@ class MyAccountTab(QWidget):
             "이미 시작했다면 에이전트 몫은 그대로 두고 기준 보유분만 지금 잔고로 다시 잡습니다. 진행할까요?",
         ) != QMessageBox.Yes:
             return
-        self.shadow_label.setText("시작하는 중…")
+        self.shadow_label.setText("다시 맞추는 중…" if self._shadow_data.get("exists") else "시작하는 중…")
         self._run(core.start_account_shadow, self._on_shadow)
+
+    def _on_live_on(self):
+        text, ok = QInputDialog.getText(
+            self, "⚠️ 실주문 켜기",
+            "켜면 에이전트 계획대로 KB증권에 실제 주문이 나갑니다.\n"
+            f"계속하려면 '{LIVE_CONFIRM}' 을 그대로 입력하세요.",
+        )
+        if not ok:
+            return
+        if text.strip() != LIVE_CONFIRM:
+            QMessageBox.warning(self, "실주문 켜기", f"확인 문구가 다릅니다. '{LIVE_CONFIRM}' 을 입력해야 켜집니다.")
+            return
+        self._run(core.set_broker_live, self._on_live, SHADOW_PORTFOLIO, True, text.strip())
+
+    def _on_live_off(self):
+        # 끄기는 안전한 쪽이라 확인 없이 즉시
+        self._run(core.set_broker_live, self._on_live, SHADOW_PORTFOLIO, False)
+
+    def _on_live(self, data):
+        if not isinstance(data, dict) or "error" in data:
+            err = data.get("error") if isinstance(data, dict) else data
+            if isinstance(err, dict):
+                err = err.get("detail") or err
+            QMessageBox.warning(self, "실주문 전환", f"바꾸지 못했습니다: {err}")
+        self._run(core.account_shadow, self._on_shadow)
+
+    def _set_mode(self, data) -> None:
+        mode = shadow_mode(data)
+        live = mode.startswith("🔴")
+        self.shadow_mode.setText(mode)
+        self.shadow_mode.setVisible(bool(mode))
+        self.shadow_mode.setStyleSheet(
+            "font-weight: bold; font-size: 15px; padding: 4px 8px; border-radius: 4px; "
+            + ("color: white; background: #c62828;" if live else "color: #333; background: #e0e0e0;"))
+        self.live_on.setVisible(bool(mode) and not live)
+        self.live_off.setVisible(live)
 
     def _on_shadow_stop(self):
         self._run(core.stop_account_shadow, self._on_shadow)
@@ -512,7 +593,11 @@ class MyAccountTab(QWidget):
     def _on_shadow(self, data):
         self.shadow_label.setText(shadow_text(data))
         exists = isinstance(data, dict) and data.get("exists")
-        self.shadow_start.setText("지금 잔고로 다시 맞추기" if exists else "내 계좌로 에이전트 시작")
+        if isinstance(data, dict) and "error" not in data:
+            self._shadow_data = data
+            self._set_mode(data)
+        # 조회 오류일 땐 마지막으로 안 상태 기준 — 그림자가 있는데 '시작' 으로 보이면 안 된다
+        self.shadow_start.setText("잔고 다시 맞추기" if self._shadow_data.get("exists") else "내 계좌로 에이전트 시작")
         self.shadow_stop.setEnabled(bool(exists and data.get("active")))
         if exists:
             self.performance.load()
