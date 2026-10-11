@@ -93,7 +93,7 @@ class PerformanceBox(QGroupBox):
     def __init__(self, parent=None):
         super().__init__("성과 — 넣은 돈 대비, 그냥 샀다면과 비교", parent)
         self._workers: list[_Worker] = []
-        self._loaded_at = 0.0
+        self._loaded_at: float | None = None   # 0.0 이 아니라 None — monotonic 은 부팅 시각 기준이라 부팅 10분 안엔 첫 로드를 건너뛰었다(CI)
         layout = QVBoxLayout(self)
         self.headline = QLabel("")
         self.headline.setWordWrap(True)
@@ -108,7 +108,8 @@ class PerformanceBox(QGroupBox):
         layout.addWidget(self.detail)
 
     def load(self, force: bool = False) -> None:
-        if self._workers or (not force and time.monotonic() - self._loaded_at < RELOAD_SEC):
+        if self._workers or (not force and self._loaded_at is not None
+                                  and time.monotonic() - self._loaded_at < RELOAD_SEC):
             return
         self._loaded_at = time.monotonic()
         if not self.headline.text():
@@ -121,7 +122,7 @@ class PerformanceBox(QGroupBox):
 
     def show_data(self, data) -> None:
         if not isinstance(data, dict) or "error" in data:
-            self._loaded_at = 0.0   # 실패하면 다음 갱신 때 다시 묻는다
+            self._loaded_at = None   # 실패하면 다음 갱신 때 다시 묻는다
         self.headline.setText(performance_headline(data))
         _fill(self.table, performance_rows(data))
         self.detail.setText(performance_detail(data))
