@@ -205,6 +205,9 @@ def _run_portfolio_locked(user, portfolio, recent, prices, now, watch, model_fn)
     if cfg.get("strategy") == "allocation":
         result = _allocation_result(account, prices, now, int(cfg["temperature"]), last_rebalance,
                                     Journal(actor=f"{user}/{portfolio}"))
+    elif cfg.get("strategy") == "momentum":
+        result = _momentum_result(account, prices, now, int(cfg["temperature"]), last_rebalance,
+                                  Journal(actor=f"{user}/{portfolio}"))
     else:
         result = None
     own_watch = [t for t in watch if t in set(style.focus_tickers or DEFAULT_WATCH) | set(account.positions)]
@@ -268,6 +271,31 @@ def _allocation_result(account, prices, now, temperature, last_rebalance, journa
     if any(t not in snap for t in tickers):
         return NewsStepResult(now, account.equity(snap), skipped="시세 누락")
     fills, decisions = allocation_step(account, snap, now, temperature, last_rebalance, journal)
+    return NewsStepResult(now, account.equity(snap), fills, decisions)
+
+
+def _momentum_result(account, prices, now, temperature, last_rebalance, journal, fetch=None):
+    """추세 주식 전략(SPY 70 + S&P 500 모멘텀 상위 10 각 3%). 뉴스는 매매에 쓰지 않는다."""
+    import math
+
+    from ..autopilot import momentum
+    from ..autopilot.allocation import allocation_step
+    from .engine import NewsStepResult
+
+    picks, source = momentum.picks_for(now, fetch)
+    tickers = sorted(set(picks) | {momentum.CORE} | set(account.positions))
+    snap = {t: p for t, p in prices.get_many(tickers, now).items()
+            if isinstance(p, (int, float)) and math.isfinite(p) and p > 0}
+    if any(t not in snap for t in set(account.positions) | {momentum.CORE}):
+        return NewsStepResult(now, account.equity(snap), skipped="시세 누락")
+    for t in momentum.stop_losses(account, snap, picks):
+        momentum.mark_stopped(now, t)
+        journal.record("momentum_stop_loss", ticker=t, price=snap[t], avg_price=account.positions[t].avg_price)
+    # 시세를 못 받은 위성 종목은 이번엔 빼고(그 몫은 SPY) 다음 계산에 다시 본다
+    out = momentum.stopped(now) | {t for t in picks if t not in snap}
+    tgt = momentum.targets(picks, out)
+    fills, decisions = allocation_step(account, snap, now, temperature, last_rebalance, journal,
+                                       tgt=tgt, label=f"추세 주식({source})")
     return NewsStepResult(now, account.equity(snap), fills, decisions)
 
 
