@@ -169,6 +169,14 @@ def update_baseline(baseline: dict[str, float], prev: Optional[dict], real: dict
     return {t: q for t, q in out.items() if q > 1e-6}
 
 
+FLOWS_KEEP = 500
+
+
+def record_flow(state: dict, at: datetime, amount: float) -> None:
+    """그림자 계좌에 반영한 입출금 한 줄. 성과판(account_performance)이 시간가중수익률·비교 기준을 계산할 때 쓴다."""
+    state["flows"] = (state.get("flows") or [])[-(FLOWS_KEEP - 1):] + [{"at": at.isoformat(), "amount": round(amount)}]
+
+
 def _real_marker(real: dict) -> dict:
     return {"cash": float(real.get("cash") or 0) + float(real.get("foreign_cash_krw") or 0),
             "qty": {p["ticker"]: float(p["quantity"]) for p in real.get("positions", [])}}
@@ -229,6 +237,7 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
                        for t, p in account.positions.items() if t in prices and equity > 0}
             summary["flow"] = round(flow)
             events.append({"kind": "flow", "amount": flow})
+            record_flow(state, now, flow)
             if cfg.get("sleeve"):
                 cfg = {**cfg, "principal": round(float(cfg.get("principal") or 0) + flow)}   # 넣은 돈 누계
                 store.save_config(username, cfg, portfolio)
