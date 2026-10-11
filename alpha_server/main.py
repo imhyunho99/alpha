@@ -28,6 +28,7 @@ from .errors import install_handlers
 from .model_handler import update_all_models, train_model
 from .asset_screener import get_all_tickers, get_market_for_ticker
 from .scoring_engine import calculate_scores
+from .concurrency import map_bounded
 from .trading_handler import broker
 from .risk_manager import RiskManager
 from .rate_limit import rate_limit
@@ -553,6 +554,37 @@ async def shutdown_event():
     print("⏹️ Alpha 서버 종료")
 
 
+# 데이터가 없는 종목 표시. None 은 "점수 계산 결과 없음"과 겹쳐 따로 둔다.
+_UNAVAILABLE = object()
+
+
+def _score_for_recommendation(ticker):
+    if data_handler.load_data(ticker) is None:
+        return _UNAVAILABLE
+    # 점수 계산 실패는 "데이터는 있음"으로 쳐야 한다. 예외가 밖으로 나가면
+    # 데이터 없음과 구분이 안 돼 엉뚱한 오류 메시지를 낸다.
+    try:
+        return calculate_scores(ticker)
+    except Exception as e:
+        print(f"'{ticker}' 점수 계산 실패: {e}")
+        return None
+
+
+def _warm_global_models():
+    """풀을 열기 전에 글로벌 모델을 한 번씩 읽어 둔다.
+
+    모델 캐시가 비어 있을 때 스레드 8개가 동시에 들어가면 같은 11MB joblib 을
+    각자 읽는다(캐시는 mtime 확인 후 채우는 방식이라 그 사이를 막지 못한다).
+    """
+    from .global_model_predictor import _load_model_and_features
+
+    for horizon in ("short", "mid", "long"):
+        try:
+            _load_model_and_features(horizon)
+        except Exception as e:
+            print(f"글로벌 {horizon} 모델 선로딩 실패: {e}")
+
+
 @app.get("/recommendations", summary="Top-N 투자 추천")
 def get_recommendations(
     horizon: str = "medium",
@@ -563,19 +595,26 @@ def get_recommendations(
         return {"error": "horizon 파라미터는 'short', 'medium', 'long' 중 하나여야 합니다."}
 
     tickers = get_all_tickers()
-    available_tickers = [t for t in tickers if data_handler.load_data(t) is not None]
-    if not available_tickers:
+    # ~950종목을 순차로 돌면 종목마다 CSV 를 여러 번 파싱하고 글로벌 모델을
+    # 3번 예측해 수 분이 걸린다. 상한 있는 스레드 풀로 나눠 돌린다(기본 8).
+    # 결과 순서와 종목별 실패 격리는 예전 순차 루프와 같다.
+    _warm_global_models()
+    outcomes = map_bounded(_score_for_recommendation, tickers)
+
+    if not any(o.ok and o.value is not _UNAVAILABLE for o in outcomes):
         return {"error": "사용 가능한 데이터가 없습니다. '서버 데이터 업데이트 요청'을 먼저 실행해주세요."}
 
     all_scores = []
-    for ticker in available_tickers:
-        try:
-            scores = calculate_scores(ticker)
-            if scores:
-                all_scores.append({"symbol": ticker, "score": scores.get(horizon, 0)})
-        except Exception as e:
-            print(f"'{ticker}' 점수 계산 실패: {e}")
+    for outcome in outcomes:
+        if not outcome.ok:
+            # 데이터 조회 자체가 터진 종목. 그 종목만 빼고 계속 간다.
+            print(f"'{outcome.item}' 데이터 조회 실패: {outcome.error}")
             continue
+        scores = outcome.value
+        if scores is _UNAVAILABLE:
+            continue
+        if scores:
+            all_scores.append({"symbol": outcome.item, "score": scores.get(horizon, 0)})
 
     if not all_scores:
         return {"error": "점수를 계산할 수 있는 자산이 없습니다. '서버 모델 재학습 요청'을 실행해주세요."}
