@@ -16,6 +16,16 @@ def _clear_kb_token_cache():
     kb_broker._TOKENS.clear()
 
 
+@_pytest.fixture(autouse=True)
+def _silence_notify(monkeypatch, tmp_path):
+    """테스트가 실제 맥 알림센터·텔레그램을 울리거나 ~/AlphaModels 에 알림 상태를 쓰지 않게."""
+    from alpha_server import notify
+
+    monkeypatch.setattr(notify, "STATE_FILE", str(tmp_path / "notify_state.json"))
+    monkeypatch.setattr(notify, "_macos", lambda title, body: False)
+    monkeypatch.setattr(notify, "_telegram", lambda username, text: False)
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Qt 위젯·작업 스레드를 파이썬 종료 전에 정리한다.
 

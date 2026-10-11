@@ -23,7 +23,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from .. import audit_log
+from .. import audit_log, notify
 from . import store
 
 BAND = 0.10              # 목표에서 이 비율 이상 벗어났을 때만 맞춘다 — 모의 엔진과 같은 허용폭
@@ -181,6 +181,7 @@ def _trip_breaker(username: str, portfolio: str, state: dict, reason: str, now: 
         cfg["broker"]["dry_run"] = True
         store.save_config(username, cfg, portfolio)
     state["breaker"] = {"at": now.isoformat(), "reason": reason}
+    state.setdefault("_events", []).append({"kind": "breaker", "reason": reason})
     audit_log.record("trade", "broker_mirror_breaker", actor=f"{username}/{portfolio}", reason=reason)
 
 
@@ -193,6 +194,7 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
     state = load_state(username, portfolio)
     summary = {"at": now.isoformat(), "broker": opts["name"] if opts else None,
                "dry_run": opts["dry_run"] if opts else True, "orders": 0, "status": "ok", "message": ""}
+    events = state["_events"] = []   # 알림할 일. _finish 가 저장 전에 빼내 보낸다
     try:
         if broker is None:
             from ..brokers import build_broker_for_user
@@ -226,6 +228,7 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
             weights = {t: p.quantity * prices[t] / equity
                        for t, p in account.positions.items() if t in prices and equity > 0}
             summary["flow"] = round(flow)
+            events.append({"kind": "flow", "amount": flow})
             if cfg.get("sleeve"):
                 cfg = {**cfg, "principal": round(float(cfg.get("principal") or 0) + flow)}   # 넣은 돈 누계
                 store.save_config(username, cfg, portfolio)
@@ -257,8 +260,12 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
                 expected = pend["quantity"] if pend["action"] == "buy" else -pend["quantity"]
                 if expected and moved / expected >= 0.9:
                     del pending[t]
+                    events.append({"kind": "filled", "ticker": t, "action": pend["action"],
+                                   "quantity": pend["quantity"], "order_no": pend.get("order_no", "")})
                 elif now - datetime.fromisoformat(pend["at"]) > timedelta(hours=24):
                     del pending[t]   # 하루 지나도 반영이 없으면(거절·당일 취소) 다시 계산하게 둔다
+                    events.append({"kind": "failed", "ticker": t, "action": pend["action"],
+                                   "message": "24시간 안에 체결이 잔고에 안 보임 (거절·취소 추정)"})
             try:
                 busy = {o["ticker"] for o in broker.open_orders(now)} if hasattr(broker, "open_orders") else set()
             except Exception:
@@ -273,10 +280,7 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
         if opts["dry_run"] and orders and signature == state.get("last_plan"):
             summary.update(orders=0, real_equity=round(float(real.get("total_value") or 0)),
                            message="계획 변경 없음 (지난 기록과 같음)")
-            state["last_sync_at"] = now.isoformat()
-            state["last"] = summary
-            _save_state(username, portfolio, state)
-            return summary
+            return _finish(username, portfolio, state, summary, now)
         state["last_plan"] = signature
         done = []
         day = now.date().isoformat()
@@ -314,6 +318,7 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
                         state.setdefault("verified", {})[market] = now.isoformat()
                     else:
                         state.setdefault("blocked", {})[market] = {"at": now.isoformat(), "reason": result.get("message")}
+                        events.append({"kind": "self_test", "market": market, "message": result.get("message")})
                         deferred.append(o["ticker"])
                         continue
                 if total and o["amount_krw"] > total * MAX_ORDER_SHARE:
@@ -329,6 +334,8 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
                 ok, reason = rm.can_buy()
                 if not ok:
                     o.update(status="risk_blocked", message=reason)
+                    if live:
+                        events.append({"kind": "failed", **o})
                     done.append(o)
                     continue
             if live and o["action"] == "buy" and not o["ticker"].upper().endswith((".KS", ".KQ")):
@@ -346,6 +353,9 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
                 state.setdefault("pending", {})[o["ticker"]] = {
                     "at": now.isoformat(), "action": o["action"], "quantity": o["quantity"],
                     "qty_before": before, "order_no": o.get("order_no", "")}
+                events.append({"kind": "order", **o})
+            elif live:
+                events.append({"kind": "failed", **o})
             audit_log.record("trade", "broker_mirror", actor=f"{username}/{portfolio}",
                              broker=opts["name"], ticker=o["ticker"], side=o["action"],
                              quantity=o["quantity"], dry_run=opts["dry_run"], result=o["status"])
@@ -365,7 +375,21 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
         summary.update(status="error", message=str(e))
     except Exception as e:
         summary.update(status="error", message=f"{type(e).__name__}: {e}")
+    return _finish(username, portfolio, state, summary, now)
+
+
+def _finish(username: str, portfolio: str, state: dict, summary: dict, now: datetime) -> dict:
+    """상태를 저장하고, 모아 둔 이벤트를 알린다. 기록만(dry_run) 주문은 이벤트로 모으지 않는다."""
     state["last_sync_at"] = now.isoformat()
     state["last"] = summary
+    events = state.pop("_events", None) or []
+    if summary["status"] == "error" and not summary["dry_run"] and not any(e["kind"] == "breaker" for e in events):
+        events.append({"kind": "error", "message": summary["message"]})
     _save_state(username, portfolio, state)
+    # 저장한 뒤에 알린다 — 알림이 느리거나 실패해도 주문 기록은 이미 남아 있고, 예외는 삼킨다
+    if events:
+        try:
+            notify.mirror_events(username, portfolio, events, now)
+        except Exception:
+            pass
     return summary

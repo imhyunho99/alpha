@@ -62,6 +62,18 @@ BROKER_FIELDS = {
     "anthropic": [
         ("api_key", "Anthropic API Key (자연어 파싱용)", True),
     ],
+    "telegram": [
+        ("bot_token", "Bot Token (BotFather 가 준 값)", True),
+        ("chat_id", "Chat ID (숫자)", False),
+    ],
+}
+
+# 입력란 위에 보일 안내. 키 발급이 낯선 항목만.
+BROKER_HELP = {
+    "telegram": ("실주문·체결·오류가 생기면 휴대폰으로 알려줍니다(무료, 선택). 맥 알림센터 알림은 등록 없이도 옵니다.\n"
+                 "1) 텔레그램에서 @BotFather 에게 /newbot → 이름을 정하면 Bot Token 을 줍니다.\n"
+                 "2) 만든 봇과 대화방을 열어 아무 말이나 한 번 보냅니다.\n"
+                 "3) 브라우저로 api.telegram.org/bot<토큰>/getUpdates 를 열어 \"chat\":{\"id\": 뒤 숫자가 Chat ID 입니다."),
 }
 
 
@@ -73,6 +85,7 @@ API_SERVICES = [
     ("alpaca", "Alpaca", "미국 주식 주문 (모의/실전)"),
     ("upbit", "업비트", "코인 주문"),
     ("binance", "바이낸스", "코인 주문"),
+    ("telegram", "텔레그램 알림", "실주문·체결·오류를 휴대폰으로 알림 (무료, 선택)"),
 ]
 API_LABELS = {key: label for key, label, _ in API_SERVICES}
 PREFS_FILE = os.path.expanduser("~/AlphaModels/.client_prefs.json")
@@ -274,6 +287,12 @@ class ApiKeyDialog(QDialog):
         while self.form_layout.rowCount():
             self.form_layout.removeRow(0)
         self._field_widgets.clear()
+        if broker in BROKER_HELP:
+            help_label = QLabel(BROKER_HELP[broker])
+            help_label.setTextFormat(Qt.PlainText)   # '<토큰>' 이 HTML 태그로 먹히지 않게
+            help_label.setWordWrap(True)
+            help_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.form_layout.addRow(help_label)
         for key, label, secret in BROKER_FIELDS.get(broker, []):
             edit = QLineEdit()
             if secret:
