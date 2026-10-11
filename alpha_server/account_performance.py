@@ -170,7 +170,8 @@ def _load_frames(tickers: list[str], start: date) -> dict:
     if missing:
         got = download_many(missing, period="1y" if (today - start).days < 300 else "5y")
         out.update({t: f for t, f in got.items() if f is not None and not f.empty})
-    _price_cache[key] = (time.time(), out)
+    if len(out) == len(tickers):   # 일부만 받은 결과는 담지 않는다 — 실측(10/11): 일시 DNS 실패가 10분간 비교 기준을 막았다
+        _price_cache[key] = (time.time(), out)
     return out
 
 
