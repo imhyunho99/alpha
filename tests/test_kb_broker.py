@@ -234,7 +234,7 @@ class FakeBroker:
     def get_cash(self):
         return self.total
 
-    def execute_order(self, ticker, action, quantity):
+    def execute_order(self, ticker, action, quantity, amount_krw=None):   # 미국 소수점은 금액 주문
         self.orders.append((ticker, action, quantity))
         return {"status": "success", "message": "[DRY-RUN]"}
 

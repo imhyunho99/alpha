@@ -28,8 +28,8 @@ class ShadowPayload(BaseModel):
     broker: str = Field("kb", pattern=r"^(kb)$")
     temperature: int = Field(5, ge=1, le=7)   # 8 이상은 모의 레버리지 — 실계좌 복제에는 쓰지 않는다
     sleeve: bool = True                        # 새 돈만 운용(기존 보유 종목은 건드리지 않음)
-    # 비우면 기존 값 유지(처음이면 allocation)
-    strategy: Optional[str] = Field(None, pattern=r"^(allocation|news)$")
+    # 비우면 기존 값 유지(처음이면 momentum). momentum = SPY 70 + 추세 주식 30 (10/11 사용자 결정)
+    strategy: Optional[str] = Field(None, pattern=r"^(momentum|allocation|news)$")
 
 
 @router.get("/shadow", summary="실계좌 에이전트 운용 상태·기록된 주문·차트 데이터")

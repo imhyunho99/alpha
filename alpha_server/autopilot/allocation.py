@@ -35,19 +35,21 @@ def targets(temperature: int) -> dict[str, float]:
 
 
 def needs_rebalance(account, prices: dict[str, float], at: datetime, temperature: int,
-                    last_rebalance: datetime | None) -> str | None:
-    """리밸런싱 이유(문자열) 또는 None."""
+                    last_rebalance: datetime | None, tgt: dict[str, float] | None = None) -> str | None:
+    """리밸런싱 이유(문자열) 또는 None. tgt 를 주면 온도 대신 그 목표 비중(추세 주식 전략)."""
     equity = account.equity(prices)
     if equity <= 0:
         return None
     if account.cash / equity > CASH_TRIGGER:
         return f"현금 {account.cash:,.0f}원 투입"
-    tgt = targets(temperature)
+    tgt = tgt or targets(temperature)
     for t, w in tgt.items():
         pos = account.positions.get(t)
         cur = (pos.quantity * prices[t] / equity) if pos and t in prices else 0.0
         if abs(cur - w) > BAND:
             return f"{t} 비중 {cur:.0%} (목표 {w:.0%})"
+        if cur == 0.0 and w > 0:
+            return f"{t} 새로 편입"
     for t in account.positions:
         if t not in tgt:
             return f"{t} 정리(전략 밖 종목)"
@@ -57,12 +59,13 @@ def needs_rebalance(account, prices: dict[str, float], at: datetime, temperature
 
 
 def allocation_step(account, prices: dict[str, float], at: datetime, temperature: int,
-                    last_rebalance: datetime | None, journal=None) -> tuple[list, list[dict]]:
+                    last_rebalance: datetime | None, journal=None,
+                    tgt: dict[str, float] | None = None, label: str = "자산배분") -> tuple[list, list[dict]]:
     """한 번 맞춘다. (fills, decisions). 가격이 없으면 아무것도 하지 않는다."""
-    tgt = targets(temperature)
+    tgt = tgt or targets(temperature)
     if any(t not in prices for t in tgt) or any(t not in prices for t in account.positions):
         return [], []
-    reason = needs_rebalance(account, prices, at, temperature, last_rebalance)
+    reason = needs_rebalance(account, prices, at, temperature, last_rebalance, tgt)
     if reason is None:
         return [], []
     equity = account.equity(prices)
@@ -75,7 +78,7 @@ def allocation_step(account, prices: dict[str, float], at: datetime, temperature
             fill = account.sell(t, (cur - goal) / prices[t], prices[t])
             if fill:
                 fills.append(fill)
-                decisions.append(_decision(at, "trim" if t in tgt else "sell", t, fill.gross, reason))
+                decisions.append(_decision(at, "trim" if t in tgt else "sell", t, fill.gross, reason, label))
     for t, w in tgt.items():
         goal = equity * w
         pos = account.positions.get(t)
@@ -85,12 +88,12 @@ def allocation_step(account, prices: dict[str, float], at: datetime, temperature
             fill = account.buy(t, gap, prices[t], prices, 1.0)
             if fill:
                 fills.append(fill)
-                decisions.append(_decision(at, "buy", t, gap, reason))
+                decisions.append(_decision(at, "buy", t, gap, reason, label))
     if journal is not None and fills:
         journal.record("allocation_rebalance", at=at, reason=reason)
     return fills, decisions
 
 
-def _decision(at, action, ticker, amount, reason) -> dict:
+def _decision(at, action, ticker, amount, reason, label="자산배분") -> dict:
     return {"at": at.isoformat(), "action": action, "ticker": ticker, "amount": round(float(amount), 0),
-            "reason": f"자산배분: {reason}", "item_ids": [], "title": "", "url": "", "sleeve": "core"}
+            "reason": f"{label}: {reason}", "item_ids": [], "title": "", "url": "", "sleeve": "core"}

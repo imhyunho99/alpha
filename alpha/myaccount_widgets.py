@@ -259,6 +259,8 @@ def shadow_text(data) -> str:
         t = int(data.get("temperature") or 5)
         stock = min(100, max(20, 10 * t + 10))
         scope += f" · 자산배분 주식(SPY) {stock}% / 채권(IEF) {100 - stock}%"
+    elif data.get("strategy") == "momentum":
+        scope += " · 추세 주식: SPY 70% + S&P 500 12개월 상승 상위 10종목 각 3% (매달 교체, -20% 손절)"
     parts = [f"{state} · {mode} · {scope} · 온도 {data.get('temperature')}",
              f"시작 {str(data.get('seeded_at') or '')[:16].replace('T', ' ')}"]
     last = data.get("last_sync") or {}

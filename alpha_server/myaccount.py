@@ -381,7 +381,7 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
     새로 만들거나 멈춘 계좌를 다시 시작할 때는 '기록만'으로 시작한다(멈춘 뒤 재시작이 실주문을 조용히 켜면 안 된다).
     실측(10/11): 다시 맞추기가 config 를 새로 쓰며 dry_run=True 로 덮어써 전날 켠 실주문이 조용히 꺼졌다.
     실주문 '켜기'는 여전히 /autopilot/broker/live 확인 문구로만 — 여기서는 켜지 않고 유지만 한다.
-    strategy=None 이면 기존 값(없으면 "allocation")을 쓴다.
+    strategy=None 이면 기존 값(없으면 "momentum")을 쓴다.
     """
     from .autopilot import store as ap_store
     from .autopilot.account import PaperAccount, Position
@@ -473,9 +473,10 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
             "sleeve": bool(sleeve), "baseline": baseline, "principal": round(principal),
             # 성과판의 시작일. '다시 맞추기'는 seeded_at 을 덮어쓰므로 처음 시작한 날을 따로 남긴다.
             "started_at": (existing_cfg.get("started_at") if resync else now.isoformat()),
-            # "allocation": 주식(SPY)/채권(IEF) 자산배분(기본, 2026-10-09 판정) | "news": 뉴스 데스크 에이전트
-            # 지정 안 하면 기존 값. 키가 없으면 allocation(10/9 사용자 결정) — 10/10 옛 서버가 키 없이 써서 뉴스 전략이 돈 사고 재발 방지.
-            "strategy": strategy or cfg.get("strategy") or "allocation",
+            # "momentum": SPY 70 + S&P 500 추세 상위 10 각 3%(기본, 2026-10-11 사용자 결정 — autopilot/momentum.py)
+            # | "allocation": SPY/IEF 자산배분 | "news": 뉴스 데스크 에이전트
+            # 지정 안 하면 기존 값. 키가 없으면 기본값 — 10/10 옛 서버가 키 없이 써서 뉴스 전략이 돈 사고 재발 방지.
+            "strategy": strategy or cfg.get("strategy") or "momentum",
         })
         ap_store.save_config(username, cfg, portfolio)
         ap_store.save_account(username, account, None, portfolio, last_tracked_at=now)

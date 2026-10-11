@@ -117,7 +117,8 @@ def plan(paper_weights: dict[str, float], real: dict, price_krw: dict[str, float
         orders.append({"ticker": t, "action": "buy" if diff > 0 else "sell", "quantity": qty,
                        "amount_krw": round(qty * price), "target_krw": round(target),
                        "current_krw": round(current)})
-    orders.sort(key=lambda o: o["action"] != "sell")
+    # 매도 먼저(현금 확보), 매수는 큰 것부터 — 하루 매수 건수 한도에 걸려도 코어(SPY)가 먼저 산다
+    orders.sort(key=lambda o: (o["action"] != "sell", -o["amount_krw"]))
     return orders
 
 
