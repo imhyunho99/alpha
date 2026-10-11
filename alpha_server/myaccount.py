@@ -366,7 +366,7 @@ def shadow_status(username: str, portfolio: str = SHADOW_PORTFOLIO) -> dict:
 
 def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADOW_TEMPERATURE,
                 portfolio: str = SHADOW_PORTFOLIO, broker=None, now: Optional[datetime] = None,
-                sleeve: bool = True, strategy: str = "allocation") -> dict:
+                sleeve: bool = True, strategy: Optional[str] = None) -> dict:
     """실계좌 잔고로 모의 포트폴리오를 만들거나 다시 맞춘다. 주문은 하지 않는다.
 
     sleeve=True(기본, 사용자 결정 10/9): '새 돈만' 운용. 지금 보유 종목은 기준 보유분으로 묶고 절대 팔지 않는다.
@@ -376,6 +376,11 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
     시작가(avg_price)는 매입가가 아니라 지금 가격이다. 손절·익절·손실 브레이크는 에이전트가 계좌를
     넘겨받은 시점부터 잰다. 실측(10/5): 매입가를 쓰면 보유 4종목이 모두 -7% 손절선 아래라 첫 실행에
     전부 팔았다 — 과거의 매수 판단까지 에이전트가 책임지는 꼴이다.
+
+    다시 맞출 때 증권사 연동 설정(broker, 특히 dry_run)은 그대로 둔다. 새로 만들 때만 '기록만'으로 시작한다.
+    실측(10/11): 다시 맞추기가 config 를 새로 쓰며 dry_run=True 로 덮어써 전날 켠 실주문이 조용히 꺼졌다.
+    실주문 '켜기'는 여전히 /autopilot/broker/live 확인 문구로만 — 여기서는 켜지 않고 유지만 한다.
+    strategy=None 이면 기존 값(없으면 "allocation")을 쓴다.
     """
     from .autopilot import store as ap_store
     from .autopilot.account import PaperAccount, Position
@@ -450,16 +455,24 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
         style.notes = list(style.notes) + [f"새 돈만 운용 — 기존 보유 {len(baseline)}종목은 건드리지 않음"]
 
     with ap_store.portfolio_lock(username, portfolio):
-        ap_store.save_config(username, {
+        # load→merge: 여기서 정하지 않는 키(연동 설정, 사용자가 바꾼 값 등)를 잃지 않게 기존 config 위에 덮는다
+        cfg = ap_store.load_config(username, portfolio)
+        prev_broker = cfg.get("broker") if cfg.get("shadow_of") else None
+        keep_broker = (isinstance(prev_broker, dict)
+                       and str(prev_broker.get("name") or "").lower() == broker_name.lower())
+        cfg.update({
             "temperature": int(temperature), "capital": round(total), "active": True, "horizon": "medium",
             "mode": "news", "portfolio": portfolio, "shadow_of": broker_name, "seeded_at": now.isoformat(),
-            "broker": {"name": broker_name, "dry_run": True},
+            # 새로 만들 때만 '기록만'. 다시 맞추기는 기존 연동 설정(dry_run 포함)을 유지한다.
+            "broker": dict(prev_broker) if keep_broker else {"name": broker_name, "dry_run": True},
             "sleeve": bool(sleeve), "baseline": baseline, "principal": round(principal),
             # 성과판의 시작일. '다시 맞추기'는 seeded_at 을 덮어쓰므로 처음 시작한 날을 따로 남긴다.
             "started_at": (existing_cfg.get("started_at") if resync else now.isoformat()),
             # "allocation": 주식(SPY)/채권(IEF) 자산배분(기본, 2026-10-09 판정) | "news": 뉴스 데스크 에이전트
-            "strategy": strategy,
-        }, portfolio)
+            # 지정 안 하면 기존 값. 키가 없던 옛 그림자는 runner 가 news 로 돌리던 것 — 그대로 둔다.
+            "strategy": strategy or (cfg.get("strategy") or "news" if cfg.get("shadow_of") else "allocation"),
+        })
+        ap_store.save_config(username, cfg, portfolio)
         ap_store.save_account(username, account, None, portfolio, last_tracked_at=now)
         if not (sleeve and existing is not None and existing_cfg.get("sleeve")):
             nd_store.save_style(username, portfolio, style)
@@ -469,9 +482,20 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
 
     from . import audit_log
 
+    dry_run = _mirror_dry_run(cfg)
     audit_log.record("config", "shadow_seeded", actor=username, portfolio=portfolio, broker=broker_name,
-                     holdings=len(account.positions), dry_run=True)
+                     holdings=len(account.positions), dry_run=dry_run)
+    if keep_broker:
+        # 실주문을 켠 게 아니라 이미 켜져 있던 것을 유지했다는 기록
+        audit_log.record("config", "shadow_resync_broker_kept", actor=username, portfolio=portfolio,
+                         broker=cfg["broker"].get("name"), dry_run=dry_run)
     return shadow_status(username, portfolio)
+
+
+def _mirror_dry_run(cfg: dict) -> bool:
+    from .autopilot import mirror
+
+    return (mirror.settings(cfg) or {}).get("dry_run", True)
 
 
 def _recent_live_orders(username: str, portfolio: str, now: datetime) -> bool:

@@ -226,6 +226,10 @@ def ap_dir(monkeypatch, tmp_path):
     from alpha_server.autopilot import store as ap_store
 
     monkeypatch.setattr(ap_store, "STATE_DIR", str(tmp_path / "autopilot"))
+    # 감사 로그 경로는 import 시점에 정해진다 — 실제 ~/AlphaModels 에 쓰지 않게 격리
+    from alpha_server import audit_log
+
+    monkeypatch.setattr(audit_log, "LOG_FILE", str(tmp_path / "audit.log.jsonl"))
     return ap_store
 
 
@@ -366,6 +370,200 @@ def test_sleeve_resync_rebuilds_from_real_account(ap_dir):
     assert account.positions["NVDA"].quantity == pytest.approx(2)
     assert status["baseline"]["NVDA"] == 10
 
+
+
+# ---------- 다시 맞추기가 실주문을 끄지 않게 (10/11 실측) ----------
+
+def test_resync_keeps_live_broker_and_other_config(ap_dir):
+    """10/11 실측 재현: 다시 맞추기가 config 를 새로 쓰며 dry_run=True 로 덮어써 실주문이 조용히 꺼졌다."""
+    from alpha_server import audit_log
+
+    kb, _ = _kb()
+    status = M.seed_shadow("kim", "kb", broker=kb, now=NOW, strategy="news")
+    assert status["dry_run"] is True                                    # 새로 만들 땐 기록만
+    cfg = ap_dir.load_config("kim", M.SHADOW_PORTFOLIO)
+    cfg["broker"]["dry_run"] = False                                    # 사용자가 PATCH 확인 문구로 켰다
+    cfg["broker"]["extra"] = "keep"
+    cfg["user_note"] = "남겨야 함"
+    ap_dir.save_config("kim", cfg, M.SHADOW_PORTFOLIO)
+
+    status = M.seed_shadow("kim", "kb", broker=kb, now=NOW + timedelta(days=1))   # strategy 지정 안 함
+    cfg = ap_dir.load_config("kim", M.SHADOW_PORTFOLIO)
+    assert status["dry_run"] is False
+    assert cfg["broker"] == {"name": "kb", "dry_run": False, "extra": "keep"}
+    assert cfg["strategy"] == "news" and cfg["user_note"] == "남겨야 함"
+    assert cfg["seeded_at"] == (NOW + timedelta(days=1)).isoformat()
+    kept = [e for e in audit_log.read_all() if e.get("action") == "shadow_resync_broker_kept"]
+    assert len(kept) == 1 and kept[0]["fields"]["dry_run"] is False
+
+    # 기록만이었으면 기록만 그대로, strategy 를 주면 바뀐다
+    cfg["broker"]["dry_run"] = True
+    ap_dir.save_config("kim", cfg, M.SHADOW_PORTFOLIO)
+    status = M.seed_shadow("kim", "kb", broker=kb, now=NOW, strategy="allocation")
+    assert status["dry_run"] is True and status["strategy"] == "allocation"
+    cfg = ap_dir.load_config("kim", M.SHADOW_PORTFOLIO)
+    del cfg["strategy"]                                                 # 키가 없던 옛 그림자는 news 로 돌았다
+    ap_dir.save_config("kim", cfg, M.SHADOW_PORTFOLIO)
+    assert M.seed_shadow("kim", "kb", broker=kb, now=NOW)["strategy"] == "news"
+
+
+def test_new_shadow_always_starts_record_only(ap_dir):
+    """그림자가 없던 포트폴리오에 남은 연동 설정이 실주문이어도 새로 만들 땐 기록만으로 시작한다."""
+    ap_dir.save_config("kim", {"active": False, "broker": {"name": "kb", "dry_run": False}}, M.SHADOW_PORTFOLIO)
+    kb, _ = _kb()
+    status = M.seed_shadow("kim", "kb", broker=kb, now=NOW)
+    assert status["dry_run"] is True and status["strategy"] == "allocation"
+    assert ap_dir.load_config("kim", M.SHADOW_PORTFOLIO)["broker"] == {"name": "kb", "dry_run": True}
+
+
+def test_shadow_api_resync_keeps_live(monkeypatch, ap_dir):
+    """API 경로: 실주문 켜기는 확인 문구 PATCH 로만, 다시 맞추기(POST /account/shadow)는 그 상태를 유지한다."""
+    from cryptography.fernet import Fernet
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("ALPHA_JWT_SECRET", "test-secret-do-not-use-in-prod")
+    monkeypatch.setenv("ALPHA_VAULT_KEY", Fernet.generate_key().decode())
+    from importlib import reload
+
+    from alpha_server import audit_log, auth, credentials, rate_limit
+    reload(audit_log)
+    reload(auth)
+    reload(credentials)
+    from alpha_server.main import app
+    from alpha_server.newsdesk import runner
+
+    monkeypatch.setattr(rate_limit, "_buckets", {})        # 앞 테스트가 쓴 POST /account/shadow 한도(분당 3회)와 분리
+    monkeypatch.setattr(runner, "start", lambda u, p: None)
+    monkeypatch.setattr(runner, "stop", lambda u=None, p=None: None)
+    client = TestClient(app)
+    client.post("/auth/bootstrap", json={"username": "kim", "password": "StrongPass1!"})
+    tok = client.post("/auth/login", data={"username": "kim", "password": "StrongPass1!"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {tok}"}
+    kb, _ = _kb()
+    monkeypatch.setattr("alpha_server.brokers.build_broker_for_user", lambda *a, **k: kb)
+    monkeypatch.setattr(credentials, "get_credentials", lambda u, b: {"app_key": "k"})   # 키 파일에 쓰지 않는다
+
+    assert client.post("/account/shadow", json={"broker": "kb"}, headers=h).json()["dry_run"] is True
+    live = {"portfolio": M.SHADOW_PORTFOLIO, "live": True}
+    assert client.patch("/autopilot/broker/live", json=live, headers=h).status_code == 400     # 문구 없으면 거부
+    r = client.patch("/autopilot/broker/live", json={**live, "confirm": "실거래 전환"}, headers=h)
+    assert r.status_code == 200 and r.json()["dry_run"] is False
+    r = client.post("/account/shadow", json={"broker": "kb"}, headers=h)
+    assert r.status_code == 200 and r.json()["dry_run"] is False                               # 유지
+    r = client.patch("/autopilot/broker/live", json={"portfolio": M.SHADOW_PORTFOLIO, "live": False}, headers=h)
+    assert r.json()["dry_run"] is True                                                          # 끄기는 문구 없이
+
+
+class _Dialogs:
+    def __init__(self, answer=None, text=("", False)):
+        from PySide6.QtWidgets import QMessageBox
+
+        self.Yes = QMessageBox.Yes
+        self.answer = self.Yes if answer is None else answer
+        self.text = text
+        self.questions, self.warnings, self.prompts = [], [], []
+
+    def question(self, *args, **kwargs):
+        self.questions.append(args[2])
+        return self.answer
+
+    def warning(self, *args, **kwargs):
+        self.warnings.append(args[2])
+
+    def getText(self, *args, **kwargs):
+        self.prompts.append(args[2])
+        return self.text
+
+
+def _sync_tab(monkeypatch, dialogs):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    from alpha import myaccount_widgets as mw
+
+    monkeypatch.setattr(mw, "QMessageBox", dialogs)
+    monkeypatch.setattr(mw, "QInputDialog", dialogs)
+    tab = mw.MyAccountTab()
+    tab._run = lambda fn, cb, *a: cb(fn(*a))          # 스레드 없이 바로 — 서버 호출은 monkeypatch 로 가짜
+    return mw, tab
+
+
+def test_gui_resync_keeps_live_and_shows_mode(monkeypatch):
+    dialogs = _Dialogs()
+    mw, tab = _sync_tab(monkeypatch, dialogs)
+    live = {"exists": True, "active": True, "dry_run": False, "sleeve": True, "temperature": 5}
+    calls = []
+    monkeypatch.setattr(mw.core, "account_shadow", lambda: live)
+    monkeypatch.setattr(mw.core, "start_account_shadow", lambda: calls.append("seed") or live)
+
+    tab._on_shadow({"exists": False})
+    assert tab.shadow_start.text() == "내 계좌로 에이전트 시작" and tab.shadow_mode.isHidden()
+
+    tab._on_shadow(live)
+    assert tab.shadow_start.text() == "잔고 다시 맞추기"
+    assert tab.shadow_mode.text() == "🔴 실주문 중" and not tab.shadow_mode.isHidden()
+    assert tab.live_on.isHidden() and not tab.live_off.isHidden()
+
+    tab._on_shadow_start()
+    assert "실주문은 유지됩니다. 잔고만 실계좌 기준으로 다시 맞춥니다" in dialogs.questions[-1]
+    assert calls == ["seed"] and tab.shadow_mode.text() == "🔴 실주문 중"
+
+    dialogs.answer = None                                # 확인 창에서 취소하면 안 한다
+    tab._on_shadow_start()
+    assert calls == ["seed"]
+
+    tab._on_shadow({"error": "서버에 연결할 수 없습니다"})   # 조회 실패해도 모드·버튼은 마지막 상태 유지
+    assert tab.shadow_start.text() == "잔고 다시 맞추기" and tab.shadow_mode.text() == "🔴 실주문 중"
+
+    rec = {**live, "dry_run": True}
+    tab._on_shadow(rec)
+    assert tab.shadow_mode.text() == "기록만 (실주문 꺼짐)"
+    assert not tab.live_on.isHidden() and tab.live_off.isHidden()
+
+
+def test_gui_live_toggle_requires_typed_phrase(monkeypatch):
+    dialogs = _Dialogs()
+    mw, tab = _sync_tab(monkeypatch, dialogs)
+    state = {"exists": True, "active": True, "dry_run": True, "temperature": 5}
+    patches = []
+
+    def set_live(portfolio, live, confirm=""):
+        patches.append((portfolio, live, confirm))
+        state["dry_run"] = not live
+        return {"portfolio": portfolio, "dry_run": not live}
+
+    monkeypatch.setattr(mw.core, "set_broker_live", set_live)
+    monkeypatch.setattr(mw.core, "account_shadow", lambda: dict(state))
+    tab._on_shadow(dict(state))
+
+    dialogs.text = ("실거래", True)                       # 문구가 다르면 PATCH 하지 않는다
+    tab._on_live_on()
+    assert patches == [] and dialogs.warnings
+    dialogs.text = ("실거래 전환", False)                 # 취소
+    tab._on_live_on()
+    assert patches == []
+
+    dialogs.text = ("실거래 전환", True)
+    tab._on_live_on()
+    assert patches == [("my-kb", True, "실거래 전환")] and tab.shadow_mode.text() == "🔴 실주문 중"
+
+    n = len(dialogs.prompts)
+    tab._on_live_off()                                    # 끄기는 확인 없이 즉시
+    assert patches[-1][:2] == ("my-kb", False) and len(dialogs.prompts) == n
+    assert tab.shadow_mode.text() == "기록만 (실주문 꺼짐)"
+
+
+def test_core_set_broker_live_matches_server_contract(monkeypatch):
+    from alpha import core
+
+    sent = []
+    monkeypatch.setattr(core, "_handle_request", lambda method, path, **kw: sent.append((method, path, kw)) or {})
+    core.set_broker_live("my-kb", True, "실거래 전환")
+    core.set_broker_live("my-kb", False)
+    assert sent[0] == ("patch", "/autopilot/broker/live",
+                       {"json": {"portfolio": "my-kb", "live": True, "confirm": "실거래 전환"}})
+    assert sent[1][2]["json"] == {"portfolio": "my-kb", "live": False, "confirm": ""}
 
 
 # ---------- 차트 ----------
