@@ -402,9 +402,9 @@ def test_resync_keeps_live_broker_and_other_config(ap_dir):
     status = M.seed_shadow("kim", "kb", broker=kb, now=NOW, strategy="allocation")
     assert status["dry_run"] is True and status["strategy"] == "allocation"
     cfg = ap_dir.load_config("kim", M.SHADOW_PORTFOLIO)
-    del cfg["strategy"]                                                 # 키가 없던 옛 그림자는 news 로 돌았다
+    del cfg["strategy"]                       # 키가 없던 옛 그림자(10/10 옛 서버)는 사용자 결정대로 allocation 으로
     ap_dir.save_config("kim", cfg, M.SHADOW_PORTFOLIO)
-    assert M.seed_shadow("kim", "kb", broker=kb, now=NOW)["strategy"] == "news"
+    assert M.seed_shadow("kim", "kb", broker=kb, now=NOW)["strategy"] == "allocation"
 
 
 def test_restart_stopped_shadow_resets_live_to_record_only(ap_dir):

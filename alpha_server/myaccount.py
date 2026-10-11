@@ -474,8 +474,8 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
             # 성과판의 시작일. '다시 맞추기'는 seeded_at 을 덮어쓰므로 처음 시작한 날을 따로 남긴다.
             "started_at": (existing_cfg.get("started_at") if resync else now.isoformat()),
             # "allocation": 주식(SPY)/채권(IEF) 자산배분(기본, 2026-10-09 판정) | "news": 뉴스 데스크 에이전트
-            # 지정 안 하면 기존 값. 키가 없던 옛 그림자는 runner 가 news 로 돌리던 것 — 그대로 둔다.
-            "strategy": strategy or (cfg.get("strategy") or "news" if cfg.get("shadow_of") else "allocation"),
+            # 지정 안 하면 기존 값. 키가 없으면 allocation(10/9 사용자 결정) — 10/10 옛 서버가 키 없이 써서 뉴스 전략이 돈 사고 재발 방지.
+            "strategy": strategy or cfg.get("strategy") or "allocation",
         })
         ap_store.save_config(username, cfg, portfolio)
         ap_store.save_account(username, account, None, portfolio, last_tracked_at=now)
