@@ -260,7 +260,9 @@ def shadow_text(data) -> str:
         scope += f" · 자산배분 주식(SPY) {stock}% / 채권(IEF) {100 - stock}%"
     elif data.get("strategy") == "momentum":
         scope += " · 추세 주식: SPY 70% + S&P 500 12개월 상승 상위 10종목 각 3% (매달 교체, -20% 손절)"
-    parts = [f"{state} · {mode} · {scope} · 온도 {data.get('temperature')}",
+    if data.get("strategy") != "momentum":     # 추세 주식은 온도를 안 쓴다
+        scope += f" · 온도 {data.get('temperature')}"
+    parts = [f"{state} · {mode} · {scope}",
              f"시작 {str(data.get('seeded_at') or '')[:16].replace('T', ' ')}"]
     last = data.get("last_sync") or {}
     if last:
@@ -270,8 +272,7 @@ def shadow_text(data) -> str:
             parts.append(f"마지막 계산 {str(last.get('at', ''))[5:16].replace('T', ' ')} · 주문 {last.get('orders', 0)}건"
                          + (f" · {last['message']}" if last.get("message") else ""))
     else:
-        parts.append("첫 계산은 몇 분 안에 됩니다 (뉴스 루프 3분 주기)")
-    parts.append("에이전트 판단 상세: 📰 뉴스 탭 → 'my-kb' 포트폴리오")
+        parts.append("첫 계산은 몇 분 안에 됩니다 (3분 주기)")
     return " · ".join(parts)
 
 
