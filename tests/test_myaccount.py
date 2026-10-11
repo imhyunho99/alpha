@@ -407,6 +407,24 @@ def test_resync_keeps_live_broker_and_other_config(ap_dir):
     assert M.seed_shadow("kim", "kb", broker=kb, now=NOW)["strategy"] == "news"
 
 
+def test_restart_stopped_shadow_resets_live_to_record_only(ap_dir):
+    """멈춘 계좌를 다시 시작하면 실주문을 보존하지 않는다 — 재시작이 실주문을 조용히 켜면 안 된다."""
+    from alpha_server import audit_log
+
+    kb, _ = _kb()
+    M.seed_shadow("kim", "kb", broker=kb, now=NOW)
+    cfg = ap_dir.load_config("kim", M.SHADOW_PORTFOLIO)
+    cfg["broker"]["dry_run"] = False
+    ap_dir.save_config("kim", cfg, M.SHADOW_PORTFOLIO)
+    M.stop_shadow("kim")
+
+    status = M.seed_shadow("kim", "kb", broker=kb, now=NOW)
+    assert status["active"] is True and status["dry_run"] is True
+    assert ap_dir.load_config("kim", M.SHADOW_PORTFOLIO)["broker"]["dry_run"] is True
+    actions = [e.get("action") for e in audit_log.read_all()]
+    assert "shadow_restart_live_reset" in actions and "shadow_resync_broker_kept" not in actions
+
+
 def test_new_shadow_always_starts_record_only(ap_dir):
     """그림자가 없던 포트폴리오에 남은 연동 설정이 실주문이어도 새로 만들 땐 기록만으로 시작한다."""
     ap_dir.save_config("kim", {"active": False, "broker": {"name": "kb", "dry_run": False}}, M.SHADOW_PORTFOLIO)
@@ -509,12 +527,18 @@ def test_gui_resync_keeps_live_and_shows_mode(monkeypatch):
     assert "실주문은 유지됩니다. 잔고만 실계좌 기준으로 다시 맞춥니다" in dialogs.questions[-1]
     assert calls == ["seed"] and tab.shadow_mode.text() == "🔴 실주문 중"
 
-    dialogs.answer = None                                # 확인 창에서 취소하면 안 한다
+    dialogs.answer = 0                                   # 확인 창에서 취소하면 안 한다
     tab._on_shadow_start()
     assert calls == ["seed"]
 
     tab._on_shadow({"error": "서버에 연결할 수 없습니다"})   # 조회 실패해도 모드·버튼은 마지막 상태 유지
     assert tab.shadow_start.text() == "잔고 다시 맞추기" and tab.shadow_mode.text() == "🔴 실주문 중"
+
+    stopped = {**live, "active": False}                 # 멈춘 계좌 재시작: 실주문이 꺼진다고 알린다
+    tab._on_shadow(stopped)
+    tab._on_shadow_start()
+    assert "실주문은 꺼지고 '기록만'으로 시작합니다" in dialogs.questions[-1]
+    assert "유지됩니다" not in dialogs.questions[-1]
 
     rec = {**live, "dry_run": True}
     tab._on_shadow(rec)

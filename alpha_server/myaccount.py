@@ -377,7 +377,8 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
     넘겨받은 시점부터 잰다. 실측(10/5): 매입가를 쓰면 보유 4종목이 모두 -7% 손절선 아래라 첫 실행에
     전부 팔았다 — 과거의 매수 판단까지 에이전트가 책임지는 꼴이다.
 
-    다시 맞출 때 증권사 연동 설정(broker, 특히 dry_run)은 그대로 둔다. 새로 만들 때만 '기록만'으로 시작한다.
+    운용 중(active)인 계좌를 다시 맞출 때만 증권사 연동 설정(broker, 특히 dry_run)을 그대로 둔다.
+    새로 만들거나 멈춘 계좌를 다시 시작할 때는 '기록만'으로 시작한다(멈춘 뒤 재시작이 실주문을 조용히 켜면 안 된다).
     실측(10/11): 다시 맞추기가 config 를 새로 쓰며 dry_run=True 로 덮어써 전날 켠 실주문이 조용히 꺼졌다.
     실주문 '켜기'는 여전히 /autopilot/broker/live 확인 문구로만 — 여기서는 켜지 않고 유지만 한다.
     strategy=None 이면 기존 값(없으면 "allocation")을 쓴다.
@@ -458,13 +459,17 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
         # load→merge: 여기서 정하지 않는 키(연동 설정, 사용자가 바꾼 값 등)를 잃지 않게 기존 config 위에 덮는다
         cfg = ap_store.load_config(username, portfolio)
         prev_broker = cfg.get("broker") if cfg.get("shadow_of") else None
-        keep_broker = (isinstance(prev_broker, dict)
+        same_broker = (isinstance(prev_broker, dict)
                        and str(prev_broker.get("name") or "").lower() == broker_name.lower())
+        keep_broker = same_broker and bool(cfg.get("active"))
+        # 멈춘 계좌 재시작: 실주문이 켜져 있었다면 기록만으로 되돌린다(감사 로그에 남김)
+        reset_live = same_broker and not keep_broker and prev_broker.get("dry_run", True) is False
         cfg.update({
             "temperature": int(temperature), "capital": round(total), "active": True, "horizon": "medium",
             "mode": "news", "portfolio": portfolio, "shadow_of": broker_name, "seeded_at": now.isoformat(),
-            # 새로 만들 때만 '기록만'. 다시 맞추기는 기존 연동 설정(dry_run 포함)을 유지한다.
-            "broker": dict(prev_broker) if keep_broker else {"name": broker_name, "dry_run": True},
+            # 운용 중 다시 맞추기만 기존 연동 설정(dry_run 포함)을 유지. 새로 만들기·멈춘 뒤 재시작은 '기록만'.
+            "broker": dict(prev_broker) if keep_broker else {**(prev_broker if same_broker else {}),
+                                                              "name": broker_name, "dry_run": True},
             "sleeve": bool(sleeve), "baseline": baseline, "principal": round(principal),
             # 성과판의 시작일. '다시 맞추기'는 seeded_at 을 덮어쓰므로 처음 시작한 날을 따로 남긴다.
             "started_at": (existing_cfg.get("started_at") if resync else now.isoformat()),
@@ -489,6 +494,9 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
         # 실주문을 켠 게 아니라 이미 켜져 있던 것을 유지했다는 기록
         audit_log.record("config", "shadow_resync_broker_kept", actor=username, portfolio=portfolio,
                          broker=cfg["broker"].get("name"), dry_run=dry_run)
+    elif reset_live:
+        audit_log.record("config", "shadow_restart_live_reset", actor=username, portfolio=portfolio,
+                         broker=broker_name, dry_run=True)
     return shadow_status(username, portfolio)
 
 

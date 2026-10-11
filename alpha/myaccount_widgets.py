@@ -525,8 +525,16 @@ class MyAccountTab(QWidget):
         return bool(d.get("exists")) and d.get("dry_run", True) is False
 
     def _on_shadow_start(self):
-        if self._shadow_live():
-            # 다시 맞추기는 실주문을 끄지도 켜지도 않는다 — 서버가 유지한다
+        if self._shadow_live() and not self._shadow_data.get("active"):
+            # 멈춘 계좌 재시작은 서버가 기록만으로 되돌린다 — 실주문이 조용히 다시 켜지지 않게
+            if QMessageBox.question(
+                self, "에이전트 다시 시작",
+                "멈춘 상태에서 다시 시작하면 실주문은 꺼지고 '기록만'으로 시작합니다.\n"
+                "실주문이 필요하면 시작 후 '실주문 켜기'로 다시 켜세요. 진행할까요?",
+            ) != QMessageBox.Yes:
+                return
+        elif self._shadow_live():
+            # 운용 중 다시 맞추기는 실주문을 끄지도 켜지도 않는다 — 서버가 유지한다
             if QMessageBox.question(
                 self, "잔고 다시 맞추기",
                 "실주문은 유지됩니다. 잔고만 실계좌 기준으로 다시 맞춥니다.\n진행할까요?",
