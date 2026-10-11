@@ -10,8 +10,8 @@ AI 기반 투자 분석 + 자연어 전략 자동매매 시스템. PySide6 GUI(`
 
 ## 디렉터리
 
-- `alpha/` — GUI 클라이언트 (PySide6). 진입점 `main.py`. 핵심: `core.py`(서버 통신), `gui.py`, `strategy_widgets.py`, `server_launcher.py`(서버 자동기동).
-- `alpha_server/` — FastAPI 백엔드. 진입점 `main.py`(uvicorn). 모듈: `auth/`, `brokers/`, `strategies/`, `risk_manager.py`, `audit_log.py`, `rate_limit.py`, `credentials.py`(Fernet 암호화 거래소 키 저장).
+- `alpha/` — GUI 클라이언트 (PySide6). 진입점 `main.py`. 핵심: `core.py`(서버 통신), `gui.py`(탭: 분석/추천 · 내 계좌), `myaccount_widgets.py`, `dialogs.py`(로그인·API 키), `server_launcher.py`(서버 자동기동).
+- `alpha_server/` — FastAPI 백엔드. 진입점 `main.py`(uvicorn). 모듈: `auth/`, `brokers/`, `autopilot/`(실계좌 미러·추세 주식 전략), `newsdesk/`(전략 실행 루프), `risk_manager.py`, `audit_log.py`, `rate_limit.py`, `credentials.py`(Fernet 암호화 거래소 키 저장).
 - `scripts/` — `build_macos_installer.sh`, 기타 운영 스크립트.
 - `tests/test_unit.py` — 단위 테스트 (pytest). 테스트는 항상 `tmp_path`로 격리.
 - `AlphaClient.spec`, `AlphaServer.spec` — PyInstaller 스펙.
@@ -104,7 +104,6 @@ UX 원칙: **사용자는 AlphaClient.app 더블클릭만 하면 끝나야 한�
 
 - [ ] 새 기능: 기존 `auth_required` / `rate_limit` / `audit_log` / `risk_manager` 의존성에 훅킹 (bypass 금지)
 - [ ] 새 거래소 어댑터: `alpha_server/brokers/base.py` 인터페이스 구현 + `__init__.py` 등록
-- [ ] 새 자연어 패턴: `alpha_server/strategies/nl_parser.py` 룰 + Anthropic 폴백 양쪽 케어
 - [ ] 빌드/번들 변경: 로컬 `.dmg` 빌드 → 사용자 E2E → 머지
 - [ ] 테스트: `tests/test_unit.py`에 추가, `tmp_path` 사용해 HOME 격리
 - [ ] CI: `python 3.11`로 통과해야 함 (로컬 3.14와 호환성 주의 — `from __future__ import annotations` 등)

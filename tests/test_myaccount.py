@@ -324,6 +324,8 @@ def test_shadow_text():
                      "last_sync": {"at": "2026-10-05T08:00:00", "orders": 7, "status": "ok", "message": ""}})
     assert "주문 기록만" in t and "주문 7건" in t
     assert "🔴" in shadow_text({"exists": True, "active": True, "dry_run": False, "temperature": 5})
+    m = shadow_text({"exists": True, "active": True, "dry_run": False, "temperature": 5, "strategy": "momentum"})
+    assert "추세 주식" in m and "온도" not in m and "뉴스 탭" not in m    # 지운 탭을 가리키지 않는다
 
 
 

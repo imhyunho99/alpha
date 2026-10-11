@@ -98,7 +98,7 @@ fi
 
 # README 한 장
 cat > "$STAGING/README.txt" <<'EOF'
-Alpha v3.1 — AI 기반 자동 매매 시스템
+Alpha — AI 기반 자동 매매 시스템
 =====================================
 
 설치 방법:
@@ -107,7 +107,7 @@ Alpha v3.1 — AI 기반 자동 매매 시스템
 3) 첫 실행 시 admin 계정 비밀번호를 직접 설정하라는 다이얼로그가 뜹니다.
 
 문제 발생 시:
-- README.md / QUICKSTART_v3.1.md 참조
+- README.md / QUICKSTART.md 참조
 - GitHub: https://github.com/imhyunho99/alpha
 EOF
 

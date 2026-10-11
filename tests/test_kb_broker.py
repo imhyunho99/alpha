@@ -455,17 +455,6 @@ def test_client_401_clears_token_and_notifies(monkeypatch, tmp_path):
     assert fired and core._load_token() is None
 
 
-def test_broker_text_makes_live_mode_obvious():
-    from alpha.news_widgets import broker_text, order_result_text
-
-    assert "연동 안 함" in broker_text({"broker": None})
-    dry = broker_text({"broker": "kb", "dry_run": True, "registered": False})
-    assert "기록만" in dry and "API 키 미등록" in dry
-    assert "🔴" in broker_text({"broker": "kb", "dry_run": False, "registered": True})
-    assert order_result_text({"status": "success", "dry_run": True}) == "기록됨"
-    assert "보류" in order_result_text({"status": "risk_blocked", "message": "한도"})
-
-
 def test_token_error_shows_kb_message():
     """실측 응답(잘못된 앱 키)을 그대로 재현한다."""
     from alpha_server.brokers.kb_broker import KbApiError
@@ -523,7 +512,7 @@ def test_login_connection_error_and_empty_fields(monkeypatch):
 
 
 def test_api_connect_prompt_only_when_needed(monkeypatch, tmp_path):
-    from alpha import strategy_widgets as sw
+    from alpha import dialogs as sw
 
     monkeypatch.setattr(sw, "PREFS_FILE", str(tmp_path / "prefs.json"))
     shown = []
@@ -538,8 +527,8 @@ def test_api_connect_prompt_only_when_needed(monkeypatch, tmp_path):
     monkeypatch.setattr(sw, "ApiConnectDialog", Fake)
     monkeypatch.setattr(sw, "registered_apis", lambda: {"kb"})
     sw.maybe_prompt_api_connect()
-    assert shown == [{"kb"}]                       # Claude 가 아직 없다
-    monkeypatch.setattr(sw, "registered_apis", lambda: {"kb", "anthropic"})
+    assert shown == [{"kb"}]                       # 텔레그램이 아직 없다
+    monkeypatch.setattr(sw, "registered_apis", lambda: {"kb", "telegram"})
     sw.maybe_prompt_api_connect()
     assert len(shown) == 1                         # 다 연결됐으면 묻지 않음
     monkeypatch.setattr(sw, "registered_apis", lambda: None)
@@ -556,36 +545,16 @@ def test_api_dialogs_build(monkeypatch):
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])  # noqa: F841 — 위젯 생성에 필요
-    from alpha import strategy_widgets as sw
+    from alpha import dialogs as sw
 
     monkeypatch.setattr(sw.core, "_handle_request", lambda *a, **k: {"brokers": []})
     d = sw.ApiConnectDialog(registered={"kb"})
     assert d.status_labels["kb"].text().startswith("✅")
-    assert d.status_labels["anthropic"].text().startswith("⚪")
+    assert d.status_labels["telegram"].text().startswith("⚪")
+    assert set(d.status_labels) == {"kb", "telegram"}
     k = sw.ApiKeyDialog(broker="kb")
     assert k.broker_box.currentData() == "kb" and k.broker_box.currentText() == "KB증권"
     assert set(k._field_widgets) == {"app_key", "app_secret"}
-
-
-def test_autopilot_tab_retries_portfolio_list(monkeypatch):
-    """10/4 E2E: 목록 요청이 한 번 실패하면 'default' 하나로 굳었다."""
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication
-
-    app = QApplication.instance() or QApplication([])  # noqa: F841
-    from alpha import autopilot_widgets as aw
-
-    monkeypatch.setattr(aw.AutopilotTab, "_load_portfolios", lambda self, select=None: None)
-    monkeypatch.setattr(aw.AutopilotTab, "_load_config", lambda self: None)
-    scheduled = []
-    monkeypatch.setattr(aw.QTimer, "singleShot", staticmethod(lambda ms, *rest: scheduled.append(ms)))
-    tab = aw.AutopilotTab()
-    tab._on_portfolios({"error": "서버 응답 시간이 초과되었습니다."})
-    assert scheduled == [aw.PORTFOLIO_RETRY_MS]
-    tab._on_portfolios({"error": "만료", "auth_expired": True})
-    assert len(scheduled) == 1                     # 로그인 만료면 재시도 대신 로그인 후 다시 부른다
-    tab._on_portfolios({"portfolios": [{"portfolio": "balanced-factor", "temperature": 5, "mode": "model"}]})
-    assert tab.known_portfolios() == ["balanced-factor"]
 
 
 def test_dry_run_does_not_record_the_same_plan_twice(mirror_env):

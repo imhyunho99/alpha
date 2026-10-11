@@ -1,6 +1,6 @@
 """메인 윈도우 탭 구성 테스트.
 
-분석 / 자동 운용(AutopilotTab) / 뉴스 자동매매(NewsTab) / 전략(StrategyChatTab) 4탭.
+분석 / 내 계좌 2탭. 자동 운용·뉴스 자동매매·전략 채팅은 10/11 에 뺐다(실제 돈과 무관).
 기존 메서드·메뉴·상태바가 살아 있는지 함께 지킨다.
 """
 from __future__ import annotations
@@ -17,16 +17,12 @@ from PySide6.QtWidgets import QApplication, QTabWidget  # noqa: E402
 
 from alpha import core  # noqa: E402
 from alpha import gui  # noqa: E402
-from alpha import strategy_widgets  # noqa: E402
-from alpha.autopilot_widgets import AutopilotTab  # noqa: E402
-from alpha.strategy_widgets import StrategyChatTab  # noqa: E402
+from alpha import dialogs  # noqa: E402
+from alpha.myaccount_widgets import MyAccountTab  # noqa: E402
 
 
 class _SilentMessageBox:
-    """StrategyChatTab는 생성 중 서버 조회에 실패하면 모달을 띄운다.
-
-    헤드리스 테스트에서 모달은 영원히 블로킹되므로 무해한 스텁으로 바꾼다.
-    """
+    """헤드리스 테스트에서 모달은 영원히 블로킹되므로 무해한 스텁으로 바꾼다."""
 
     Yes = 1
     No = 0
@@ -57,18 +53,11 @@ def qapp():
 def offline(monkeypatch):
     """서버 없는 상태. GUI 생성 중 네트워크를 타지 않게 전부 막는다."""
     err = {"error": "서버에 연결할 수 없습니다"}
-    monkeypatch.setattr(strategy_widgets, "QMessageBox", _SilentMessageBox)
+    monkeypatch.setattr(dialogs, "QMessageBox", _SilentMessageBox)
     monkeypatch.setattr(gui, "QMessageBox", _SilentMessageBox)
     monkeypatch.setattr(core, "server_health", lambda *a, **kw: dict(err))
     monkeypatch.setattr(core, "is_logged_in", lambda *a, **kw: False)
     monkeypatch.setattr(core, "_handle_request", lambda *a, **kw: dict(err))
-    for name in (
-        "autopilot_get_config",
-        "autopilot_set_config",
-        "autopilot_state",
-        "autopilot_backtest",
-    ):
-        monkeypatch.setattr(core, name, lambda *a, _e=err, **kw: dict(_e))
     return err
 
 
@@ -109,33 +98,17 @@ def test_central_widget_is_a_tab_widget(window):
     assert window.centralWidget() is window.tabs
 
 
-def test_has_analysis_autopilot_and_strategy_tabs(window):
+def test_has_only_analysis_and_my_account_tabs(window):
     titles = _tab_titles(window)
-    assert window.tabs.count() == 5
-    assert any("분석" in t for t in titles), titles
-    assert any("자동 운용" in t for t in titles), titles
-    assert any("전략" in t for t in titles), titles
-    assert any("뉴스" in t for t in titles), titles
-    assert any("내 계좌" in t for t in titles), titles
+    assert window.tabs.count() == 2
+    assert "분석" in titles[0] and "내 계좌" in titles[1], titles
+    for gone in ("자동 운용", "뉴스", "전략"):
+        assert not any(gone in t for t in titles), titles
 
 
-def test_autopilot_tab_is_present_and_typed(window):
-    matches = [w for w in _tab_widgets(window) if isinstance(w, AutopilotTab)]
-    assert len(matches) == 1
-    assert window.autopilot_tab is matches[0]
-
-
-def test_strategy_tab_survives(window):
-    matches = [w for w in _tab_widgets(window) if isinstance(w, StrategyChatTab)]
-    assert len(matches) == 1
-    assert window.strategy_tab is matches[0]
-
-
-def test_autopilot_sits_between_analysis_and_strategy(window):
-    widgets = _tab_widgets(window)
-    autopilot_idx = widgets.index(window.autopilot_tab)
-    strategy_idx = widgets.index(window.strategy_tab)
-    assert 0 < autopilot_idx < strategy_idx
+def test_my_account_tab_is_present_and_typed(window):
+    assert isinstance(window.tabs.widget(1), MyAccountTab)
+    assert window.myaccount_tab is window.tabs.widget(1)
 
 
 # --- 기존 요소 회귀 ---
@@ -180,7 +153,7 @@ def test_analysis_controls_still_reachable(window):
 
 def test_window_builds_without_server(window):
     assert window.windowTitle().startswith("Alpha")
-    assert window.tabs.count() == 5
+    assert window.tabs.count() == 2
 
 
 

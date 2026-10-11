@@ -32,9 +32,6 @@ from .concurrency import map_bounded
 from .trading_handler import broker
 from .risk_manager import RiskManager
 from .rate_limit import rate_limit
-from .strategies import executor as strategy_executor
-from .strategies import nl_parser, store as strategy_store
-from .strategies.spec import StrategySpec
 
 # 진행 상황 추적
 progress_status = {
@@ -278,87 +275,6 @@ def required_fields_for_broker(broker: str, _: UserPublic = Depends(require_user
         return {"error": f"지원하지 않는 broker: {broker}"}
 
 
-# --- 전략 엔드포인트 ---
-class StrategyParseRequest(BaseModel):
-    text: str
-
-
-class StrategyEvaluateRequest(BaseModel):
-    strategy_id: str
-
-
-@app.post("/strategies/parse", summary="자연어 → 전략 스펙 변환 (저장하지 않음)")
-def parse_strategy(
-    payload: StrategyParseRequest,
-    user: UserPublic = Depends(require_user),
-    _: None = Depends(rate_limit("nl_parse", capacity=20, per_seconds=60)),
-):
-    creds = credentials.get_credentials(user.username, "anthropic")
-    api_key = creds.get("api_key") if creds else None
-    spec = nl_parser.parse(payload.text, anthropic_api_key=api_key)
-    return {"spec": spec.model_dump(), "source_text": payload.text}
-
-
-@app.post("/strategies", summary="전략 등록 (자연어 또는 JSON)")
-def create_strategy(
-    payload: dict, user: UserPublic = Depends(require_user)
-):
-    """payload는 다음 둘 중 하나:
-    - {"text": "RSI 30 이하면 AAPL 5주 매수"}
-    - 완전한 StrategySpec JSON
-    """
-    if "text" in payload and len(payload) == 1:
-        creds = credentials.get_credentials(user.username, "anthropic")
-        api_key = creds.get("api_key") if creds else None
-        spec = nl_parser.parse(payload["text"], anthropic_api_key=api_key)
-    else:
-        spec = StrategySpec(**payload)
-    record = strategy_store.create(user.username, spec)
-    audit_log.record(
-        "strategy", "create", actor=user.username, strategy_id=record.id, name=record.name
-    )
-    return record.model_dump()
-
-
-@app.get("/strategies", summary="내 전략 목록")
-def list_strategies(user: UserPublic = Depends(require_user)):
-    return {"strategies": [r.model_dump() for r in strategy_store.list_for_owner(user.username)]}
-
-
-@app.get("/strategies/{sid}", summary="전략 상세")
-def get_strategy(sid: str, user: UserPublic = Depends(require_user)):
-    record = strategy_store.get(user.username, sid)
-    if not record:
-        return {"error": "전략을 찾을 수 없습니다."}
-    return record.model_dump()
-
-
-@app.patch("/strategies/{sid}", summary="전략 수정 (active, dry_run, cooldown 등)")
-def update_strategy(sid: str, patch: dict, user: UserPublic = Depends(require_user)):
-    record = strategy_store.update(user.username, sid, patch)
-    if not record:
-        return {"error": "전략을 찾을 수 없습니다."}
-    audit_log.record(
-        "strategy", "update", actor=user.username, strategy_id=sid, fields=list(patch.keys())
-    )
-    return record.model_dump()
-
-
-@app.delete("/strategies/{sid}", summary="전략 삭제")
-def delete_strategy(sid: str, user: UserPublic = Depends(require_user)):
-    ok = strategy_store.delete(user.username, sid)
-    audit_log.record("strategy", "delete", actor=user.username, strategy_id=sid, ok=ok)
-    return {"deleted": ok}
-
-
-@app.post("/strategies/{sid}/evaluate", summary="전략 즉시 평가 (수동 트리거)")
-def evaluate_strategy(sid: str, user: UserPublic = Depends(require_user)):
-    record = strategy_store.get(user.username, sid)
-    if not record:
-        return {"error": "전략을 찾을 수 없습니다."}
-    return strategy_executor.evaluate_once(record)
-
-
 # fd 고갈은 조용히 온다. 소켓을 못 열게 된 뒤에는 헬스체크가 응답조차 못 하고,
 # 로그를 뒤져야 [Errno 24] 가 보인다. 아직 응답할 수 있을 때 사용률을 같이 실어 보낸다.
 FD_WARN_PCT = 0.8
@@ -524,7 +440,6 @@ async def startup_event():
     auto_update_running = True
     auto_update_thread = threading.Thread(target=auto_update_task, daemon=True)
     auto_update_thread.start()
-    strategy_executor.start()
 
     # 재시작 후 자동 운용을 되살린다. 이게 없으면 재부팅이나 크래시 한 번에
     # 매매가 조용히 멈추고, 설정은 여전히 active 라 사용자는 알아채지 못한다.
@@ -542,14 +457,13 @@ async def startup_event():
         print(f"자동 운용 재개 실패: {exc}")
 
     audit_log.record("system", "startup")
-    print("✅ Alpha 서버 v3.1 시작 (자동 업데이트 6h, 전략 워커 5분 주기)")
+    print("✅ Alpha 서버 시작 (자동 업데이트 6h)")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     global auto_update_running
     auto_update_running = False
-    strategy_executor.stop()
     audit_log.record("system", "shutdown")
     print("⏹️ Alpha 서버 종료")
 
