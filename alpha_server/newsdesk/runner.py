@@ -13,6 +13,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
+from .. import notify
 from ..autopilot import mirror
 from ..autopilot import store as ap_store
 from ..autopilot.account import PaperAccount
@@ -242,6 +243,8 @@ def _run_portfolio_locked(user, portfolio, recent, prices, now, watch, model_fn)
                   f"{' · ' + m['message'] if m['message'] else ''}", flush=True)
         except Exception as exc:   # 연동 실패가 모의 매매 루프를 멈추면 안 된다
             print(f"[newsdesk {user}/{portfolio}] 증권사 연동 오류: {exc}", flush=True)
+    if result.skipped is None:
+        notify.maybe_daily_summary(user, portfolio, cfg, result.equity, now)   # 실주문 계좌만, 평일 16시 이후 1회
     detail = f"건너뜀({result.skipped})" if result.skipped else (f"매매 {len(trades)}건" if trades else "매매 없음")
     print(
         f"[newsdesk {user}/{portfolio}] 온도 {profile.temperature} · {detail} · "
