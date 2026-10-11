@@ -1,34 +1,27 @@
-"""전략/자격증명 관련 PySide6 위젯.
+"""로그인·API 키 대화상자.
 
 - LoginDialog: 사용자명/비밀번호 입력 → 토큰 저장
-- ApiKeyDialog: 거래소별 키 입력 → 서버에 암호화 저장
+- ApiKeyDialog: KB증권·텔레그램 키 입력 → 서버에 암호화 저장
 - ApiConnectDialog: 로그인 직후 "어떤 API 를 붙이면 뭘 할 수 있는지" 안내 + 바로 등록
-- StrategyChatTab: 자연어 채팅 → 전략 등록/조회
 """
 from __future__ import annotations
 
 import json
 import os
-from typing import Optional
 
-import requests
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QFormLayout,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
     QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -36,31 +29,9 @@ from PySide6.QtWidgets import (
 from . import core
 
 BROKER_FIELDS = {
-    "alpaca": [
-        ("api_key", "API Key", False),
-        ("api_secret", "API Secret", True),
-        ("base_url", "Base URL (paper or live)", False),
-    ],
-    "upbit": [
-        ("access_key", "Access Key", False),
-        ("secret_key", "Secret Key", True),
-    ],
-    "binance": [
-        ("api_key", "API Key", False),
-        ("api_secret", "API Secret", True),
-    ],
-    "kis": [
-        ("app_key", "App Key", False),
-        ("app_secret", "App Secret", True),
-        ("account_no", "Account No (예: 12345678-01)", False),
-        ("account_product_code", "Account Product Code (default 01)", False),
-    ],
     "kb": [
         ("app_key", "App Key (KB증권 홈페이지 > 고객서비스 > Open API)", False),
         ("app_secret", "App Secret", True),
-    ],
-    "anthropic": [
-        ("api_key", "Anthropic API Key (자연어 파싱용)", True),
     ],
     "telegram": [
         ("bot_token", "Bot Token (BotFather 가 준 값)", True),
@@ -79,12 +50,7 @@ BROKER_HELP = {
 
 # 화면에 보일 이름과 연결하면 생기는 기능. 키(내부 이름)는 서버 vault 의 broker 이름이다.
 API_SERVICES = [
-    ("kb", "KB증권", "모의계좌 매매를 실계좌로 연동 (처음엔 주문 기록만)"),
-    ("anthropic", "Claude (Anthropic)", "전략 채팅에서 자유로운 문장도 전략으로 해석"),
-    ("kis", "한국투자증권", "국내 주식 주문 (전략 채팅 자동매매)"),
-    ("alpaca", "Alpaca", "미국 주식 주문 (모의/실전)"),
-    ("upbit", "업비트", "코인 주문"),
-    ("binance", "바이낸스", "코인 주문"),
+    ("kb", "KB증권", "내 계좌 조회 · 자동 매매"),
     ("telegram", "텔레그램 알림", "실주문·체결·오류를 휴대폰으로 알림 (무료, 선택)"),
 ]
 API_LABELS = {key: label for key, label, _ in API_SERVICES}
@@ -122,7 +88,7 @@ def maybe_prompt_api_connect(parent=None) -> None:
     if _load_prefs().get("skip_api_prompt"):
         return
     done = registered_apis()
-    if done is None or {"kb", "anthropic"} <= done:
+    if done is None or {"kb", "telegram"} <= done:
         return
     ApiConnectDialog(parent, registered=done).exec()
 
@@ -139,7 +105,7 @@ class ApiConnectDialog(QDialog):
         layout.addWidget(intro)
         self.status_labels: dict[str, QLabel] = {}
         form = QFormLayout()
-        for key, label, what in API_SERVICES[:2]:   # 이 앱의 핵심 기능에 쓰이는 둘
+        for key, label, what in API_SERVICES:
             row = QHBoxLayout()
             status = QLabel()
             self.status_labels[key] = status
@@ -152,7 +118,7 @@ class ApiConnectDialog(QDialog):
             row.addWidget(btn)
             form.addRow(label, row)
         layout.addLayout(form)
-        more = QPushButton("다른 거래소 키도 관리…")
+        more = QPushButton("등록된 키 관리…")
         more.clicked.connect(lambda: self._connect(None))
         layout.addWidget(more)
         self.skip = QCheckBox("다음부터 묻지 않기")
@@ -344,174 +310,3 @@ class ApiKeyDialog(QDialog):
             return
         core._handle_request("delete", f"/credentials/{broker}")
         self._refresh_list()
-
-
-# ---------- Strategy chat tab ----------
-class _StrategyWorker(QThread):
-    done = Signal(object)
-    error = Signal(str)
-
-    def __init__(self, fn, *args):
-        super().__init__()
-        self.fn = fn
-        self.args = args
-
-    def run(self):
-        try:
-            self.done.emit(self.fn(*self.args))
-        except Exception as e:
-            self.error.emit(str(e))
-
-
-class StrategyChatTab(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-
-        layout.addWidget(QLabel("💬 자연어로 전략 추가 (예: 'AAPL RSI 30 이하면 5주 매수')"))
-        input_row = QHBoxLayout()
-        self.chat_input = QLineEdit()
-        self.chat_input.setPlaceholderText("RSI, 골든크로스, 이동평균 조건 등을 한국어로 입력하세요…")
-        send = QPushButton("전략 등록")
-        preview = QPushButton("미리보기")
-        send.clicked.connect(self._submit)
-        preview.clicked.connect(self._preview)
-        input_row.addWidget(self.chat_input)
-        input_row.addWidget(preview)
-        input_row.addWidget(send)
-        layout.addLayout(input_row)
-
-        self.preview_box = QTextEdit()
-        self.preview_box.setReadOnly(True)
-        self.preview_box.setMaximumHeight(180)
-        layout.addWidget(self.preview_box)
-
-        layout.addWidget(QLabel("📋 등록된 전략"))
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(
-            ["ID", "이름", "종목", "브로커", "활성", "모드", "발동수"]
-        )
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        layout.addWidget(self.table)
-
-        btn_row = QHBoxLayout()
-        refresh = QPushButton("새로고침")
-        toggle = QPushButton("활성/비활성")
-        toggle_dry = QPushButton("DRY-RUN ↔ 실거래")
-        run_now = QPushButton("즉시 평가")
-        delete_btn = QPushButton("삭제")
-        refresh.clicked.connect(self._refresh)
-        toggle.clicked.connect(self._toggle_active)
-        toggle_dry.clicked.connect(self._toggle_dry_run)
-        run_now.clicked.connect(self._evaluate_now)
-        delete_btn.clicked.connect(self._delete_selected)
-        btn_row.addWidget(refresh)
-        btn_row.addWidget(toggle)
-        btn_row.addWidget(toggle_dry)
-        btn_row.addWidget(run_now)
-        btn_row.addWidget(delete_btn)
-        layout.addLayout(btn_row)
-
-        self._refresh()
-
-    def _selected_id(self) -> Optional[str]:
-        row = self.table.currentRow()
-        if row < 0:
-            return None
-        return self.table.item(row, 0).text()
-
-    def _preview(self):
-        text = self.chat_input.text().strip()
-        if not text:
-            return
-        result = core._handle_request("post", "/strategies/parse", json={"text": text})
-        self.preview_box.setText(str(result))
-
-    def _submit(self):
-        text = self.chat_input.text().strip()
-        if not text:
-            return
-        result = core._handle_request("post", "/strategies", json={"text": text})
-        if "error" in result:
-            err = result["error"]
-            if isinstance(err, dict):
-                err = err.get("detail") or err
-            QMessageBox.warning(self, "저장 실패", str(err))
-            return
-        QMessageBox.information(self, "등록 완료", f"전략 '{result.get('name')}' 등록됨")
-        self.chat_input.clear()
-        self.preview_box.clear()
-        self._refresh()
-
-    def _refresh(self):
-        # 앱을 처음 열면 로그인 창보다 이 탭이 먼저 만들어진다. 로그인 전 조회 실패를
-        # 오류 팝업으로 띄우면 새 사용자가 첫 화면에서 "실패"부터 본다. 조용히 비운다.
-        if not core.is_logged_in():
-            self.table.setRowCount(0)
-            return
-        result = core._handle_request("get", "/strategies")
-        if not isinstance(result, dict) or "error" in result:
-            QMessageBox.warning(
-                self, "조회 실패",
-                "전략 목록을 불러오지 못했습니다. 로그인 상태를 확인하세요.\n"
-                f"세부: {result}",
-            )
-            self.table.setRowCount(0)
-            return
-        rows = result.get("strategies", [])
-        self.table.setRowCount(len(rows))
-        for i, r in enumerate(rows):
-            self.table.setItem(i, 0, QTableWidgetItem(r.get("id", "")))
-            self.table.setItem(i, 1, QTableWidgetItem(r.get("name", "")))
-            self.table.setItem(i, 2, QTableWidgetItem(", ".join(r.get("tickers", []))))
-            self.table.setItem(i, 3, QTableWidgetItem(r.get("broker", "")))
-            self.table.setItem(i, 4, QTableWidgetItem("✅" if r.get("active") else "⏸"))
-            mode = "🧪 DRY" if r.get("dry_run", True) else "🔴 REAL"
-            self.table.setItem(i, 5, QTableWidgetItem(mode))
-            self.table.setItem(i, 6, QTableWidgetItem(str(r.get("fire_count", 0))))
-
-    def _toggle_active(self):
-        sid = self._selected_id()
-        if not sid:
-            return
-        row = self.table.currentRow()
-        active = self.table.item(row, 4).text() == "✅"
-        core._handle_request("patch", f"/strategies/{sid}", json={"active": not active})
-        self._refresh()
-
-    def _toggle_dry_run(self):
-        sid = self._selected_id()
-        if not sid:
-            return
-        row = self.table.currentRow()
-        is_dry = "DRY" in self.table.item(row, 5).text()
-        next_dry = not is_dry
-        if not next_dry:
-            confirm = QMessageBox.question(
-                self,
-                "⚠️ 실거래 전환 확인",
-                f"전략 {sid}를 DRY-RUN(시뮬레이션)에서 **실거래**로 전환합니다.\n"
-                "다음 트리거부터 실제 거래소 API로 주문이 들어갑니다.\n\n"
-                "거래소 API 키가 등록되어 있고, 손실 가능성을 이해하셨다면 '예'를 누르세요.",
-                QMessageBox.Yes | QMessageBox.No,
-            )
-            if confirm != QMessageBox.Yes:
-                return
-        core._handle_request("patch", f"/strategies/{sid}", json={"dry_run": next_dry})
-        self._refresh()
-
-    def _evaluate_now(self):
-        sid = self._selected_id()
-        if not sid:
-            return
-        result = core._handle_request("post", f"/strategies/{sid}/evaluate")
-        QMessageBox.information(self, "평가 결과", str(result)[:1500])
-
-    def _delete_selected(self):
-        sid = self._selected_id()
-        if not sid:
-            return
-        if QMessageBox.question(self, "확인", f"전략 {sid}를 삭제할까요?") != QMessageBox.Yes:
-            return
-        core._handle_request("delete", f"/strategies/{sid}")
-        self._refresh()

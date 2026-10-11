@@ -141,7 +141,7 @@ jobs:
             ${{ steps.changelog.outputs.changelog }}
 
             ### 사용 방법
-            QUICKSTART_v3.1.md 참조
+            QUICKSTART.md 참조
           draft: false
           prerelease: false
           files: |

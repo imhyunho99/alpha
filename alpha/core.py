@@ -3,7 +3,6 @@ import json
 import os
 import time
 from typing import Callable, Optional
-from urllib.parse import urlencode
 
 import requests
 
@@ -264,112 +263,12 @@ def train_model():
     return update_server_models()
 
 
-# --- Autopilot (온도 다이얼 모의 자동 운용) ---
-
-DEFAULT_PORTFOLIO = "default"
-
-
-def _portfolio_query(portfolio: str, **extra) -> str:
-    """포트폴리오 이름은 한글도 허용되므로 반드시 인코딩해서 붙인다."""
-    params = {k: v for k, v in extra.items() if v is not None}
-    params["portfolio"] = portfolio or DEFAULT_PORTFOLIO
-    return "?" + urlencode(params)
-
-
-def autopilot_portfolios():
-    # 계좌마다 실시간 시세로 평가액을 매긴다. 평소 4초, 서버가 막 켜졌을 땐 14초(실측 10/5).
-    # 10초에 끊으면 서버 재시작 직후 목록이 안 뜬다.
-    return _handle_request("get", "/autopilot/portfolios", timeout=30)
-
-
-def autopilot_get_config(portfolio: str = DEFAULT_PORTFOLIO):
-    return _handle_request("get", "/autopilot/config" + _portfolio_query(portfolio))
-
-
-def autopilot_set_config(
-    temperature: int,
-    capital: float,
-    active: bool,
-    portfolio: str = DEFAULT_PORTFOLIO,
-    mode: Optional[str] = None,
-):
-    body = {
-        "temperature": temperature,
-        "capital": capital,
-        "active": active,
-        "portfolio": portfolio or DEFAULT_PORTFOLIO,
-    }
-    # mode 를 모르는 예전 서버도 있으니 지정했을 때만 보낸다.
-    if mode is not None:
-        body["mode"] = mode
-    return _handle_request("put", "/autopilot/config", json=body)
-
-
-def autopilot_state(portfolio: str = DEFAULT_PORTFOLIO):
-    return _handle_request("get", "/autopilot/state" + _portfolio_query(portfolio))
-
-
-def autopilot_backtest(temperature: int, capital: float, years: int = 3):
-    """백테스트는 저장된 계좌를 건드리지 않으므로 포트폴리오와 무관하다."""
-    return _handle_request(
-        "post",
-        "/autopilot/backtest",
-        json={"temperature": temperature, "capital": capital, "years": years},
-    )
-
-
-def autopilot_briefing(period: str = "daily", portfolio: str = DEFAULT_PORTFOLIO):
-    return _handle_request(
-        "get", "/autopilot/briefing" + _portfolio_query(portfolio, period=period)
-    )
-
-
-def autopilot_alerts(portfolio: str = DEFAULT_PORTFOLIO):
-    return _handle_request("get", "/autopilot/alerts" + _portfolio_query(portfolio))
-
-
-# --- 뉴스 데스크 (뉴스 기반 모의 자동매매) ---
-# 포트폴리오 생성·시작·정지는 autopilot_set_config(..., mode="news") 로 한다.
-
-
-def newsdesk_style_preview(text: str):
-    """자연어 스타일을 해석만 해 본다. 저장하지 않는다."""
-    return _handle_request("post", "/newsdesk/style/preview", json={"text": text})
-
-
-def newsdesk_set_style(portfolio: str, text: str):
-    return _handle_request(
-        "put", "/newsdesk/style", json={"portfolio": portfolio, "text": text}
-    )
-
-
-def newsdesk_get_style(portfolio: str):
-    return _handle_request("get", "/newsdesk/style" + _portfolio_query(portfolio))
-
-
-def newsdesk_state(portfolio: str):
-    return _handle_request("get", "/newsdesk/state" + _portfolio_query(portfolio))
-
-
-# ---------- 증권사 연동 (모의계좌 → 실계좌) ----------
-
-def broker_state(portfolio: str) -> dict:
-    return _handle_request("get", "/autopilot/broker", params={"portfolio": portfolio})
-
-
-def set_broker(portfolio: str, name: Optional[str]) -> dict:
-    """연동 켜기/끄기. 켜면 서버가 항상 '주문 기록만'(dry_run)으로 시작한다."""
-    return _handle_request("put", "/autopilot/broker", json={"portfolio": portfolio, "name": name})
-
+# ---------- 증권사 연동 ----------
 
 def set_broker_live(portfolio: str, live: bool, confirm: str = "") -> dict:
     """실주문 켜기/끄기. 켜기는 서버가 확인 문구('실거래 전환')를 요구한다. 끄기는 문구 없이 즉시."""
     return _handle_request("patch", "/autopilot/broker/live",
                            json={"portfolio": portfolio, "live": bool(live), "confirm": confirm})
-
-
-def check_broker(portfolio: str, name: Optional[str] = None) -> dict:
-    return _handle_request("post", "/autopilot/broker/check", json={"portfolio": portfolio, "name": name})
 
 
 # ---------- 내 실계좌 (조회 전용) ----------

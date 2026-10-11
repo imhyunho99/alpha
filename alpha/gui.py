@@ -9,12 +9,9 @@ from PySide6.QtCore import Slot, QThread, Signal, QTimer
 from PySide6.QtGui import QFont, QAction
 
 from alpha import core
-from alpha.autopilot_widgets import AutopilotTab, _Worker
+from alpha.dialogs import ApiConnectDialog, ApiKeyDialog, LoginDialog, registered_apis
 from alpha.myaccount_widgets import MyAccountTab
-from alpha.news_widgets import NewsTab
-from alpha.strategy_widgets import (
-    ApiConnectDialog, ApiKeyDialog, LoginDialog, StrategyChatTab, registered_apis,
-)
+from alpha.widgets_common import _Worker
 
 class WorkerThread(QThread):
     """백그라운드 작업을 처리하는 스레드"""
@@ -68,7 +65,7 @@ class AlphaGUI(QMainWindow):
         self.progress_timer.timeout.connect(self.check_progress)
         self.progress_timer.setInterval(2000)  # 2초마다 체크
 
-        # 탭 구조: 분석 / 자동 운용 / 뉴스 자동매매 / 전략 채팅
+        # 탭 구조: 분석 / 내 계좌
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
@@ -81,21 +78,9 @@ class AlphaGUI(QMainWindow):
         self.create_result_box(main_layout)
         self.tabs.addTab(analysis_widget, "📈 분석/추천")
 
-        # 탭 2: 온도 다이얼 자동 운용
-        self.autopilot_tab = AutopilotTab()
-        self.tabs.addTab(self.autopilot_tab, "🤖 자동 운용")
-
-        # 탭 3: 뉴스 기반 모의 자동매매
-        self.news_tab = NewsTab()
-        self.tabs.addTab(self.news_tab, "📰 뉴스 자동매매")
-
-        # 탭: 내 실계좌 (조회 전용)
+        # 탭 2: 내 실계좌 (조회 + 자동 매매)
         self.myaccount_tab = MyAccountTab()
         self.tabs.addTab(self.myaccount_tab, "💼 내 계좌")
-
-        # 탭 4: 전략 채팅
-        self.strategy_tab = StrategyChatTab()
-        self.tabs.addTab(self.strategy_tab, "💬 전략 채팅")
 
         self.create_status_bar()
         self._build_menu()
@@ -178,19 +163,13 @@ class AlphaGUI(QMainWindow):
             if LoginDialog(self).exec() == QDialog.Accepted:
                 self.statusBar().showMessage("다시 로그인됨", 3000)
                 self._after_login()
-                current = self.tabs.currentWidget()
-                for name in ("_on_refresh_clicked", "_refresh_state"):
-                    if hasattr(current, name):
-                        getattr(current, name)()
-                        break
         finally:
             self._login_prompt_open = False
 
     def _after_login(self):
-        """로그인 전에 열린 탭들은 목록을 못 받았다(401). 로그인하면 다시 불러온다."""
-        for tab in (self.autopilot_tab, self.news_tab):
-            if hasattr(tab, "reload_portfolios"):
-                tab.reload_portfolios()
+        """로그인 전에 열린 탭은 내용을 못 받았다(401). 로그인하면 다시 불러온다."""
+        if self.myaccount_tab._loaded_once:   # 아직 안 열어 봤으면 열 때 불러온다
+            self.myaccount_tab.refresh()
 
     def _open_login(self):
         if LoginDialog(self).exec() == QDialog.Accepted:

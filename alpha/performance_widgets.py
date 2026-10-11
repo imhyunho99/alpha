@@ -6,8 +6,7 @@ import time
 from PySide6.QtWidgets import QGroupBox, QLabel, QVBoxLayout
 
 from alpha import core
-from alpha.autopilot_widgets import _Worker
-from alpha.news_widgets import _fill, _make_table, _num, _rows
+from alpha.widgets_common import _Worker, _fill, _make_table, _num, _rows
 
 RELOAD_SEC = 600   # 서버가 비교 시세를 10분 캐시한다 — 그림자 상태(1분 주기)마다 다시 묻지 않는다
 

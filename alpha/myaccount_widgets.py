@@ -23,8 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from alpha import core
-from alpha.autopilot_widgets import _Worker
-from alpha.news_widgets import _fill, _make_table, _num, _rows
+from alpha.widgets_common import _Worker, _fill, _make_table, _num, _rows
 from alpha.performance_widgets import PerformanceBox
 
 KB_OPEN_API_URL = "https://openapi.kbsec.com"
@@ -620,7 +619,7 @@ class MyAccountTab(QWidget):
         ])
 
     def _open_keys(self):
-        from alpha.strategy_widgets import ApiKeyDialog
+        from alpha.dialogs import ApiKeyDialog
 
         ApiKeyDialog(self, broker="kb").exec()
         self.refresh()

@@ -9,7 +9,6 @@ a = Analysis(
     datas=[
         ('alpha_server/*.py', 'alpha_server'),
         ('alpha_server/brokers/*.py', 'alpha_server/brokers'),
-        ('alpha_server/strategies/*.py', 'alpha_server/strategies'),
         # alpha_server/models 는 사용자가 훈련 후 생성 (런타임 ~/AlphaModels에 저장).
         # 빌드 시 폴더가 없어 PyInstaller가 실패하던 문제 해결.
     ],
@@ -69,13 +68,6 @@ a = Analysis(
         'alpha_server.brokers.upbit_broker',
         'alpha_server.brokers.binance_broker',
         'alpha_server.brokers.kis_broker',
-        'alpha_server.strategies',
-        'alpha_server.strategies.spec',
-        'alpha_server.strategies.indicators',
-        'alpha_server.strategies.evaluator',
-        'alpha_server.strategies.store',
-        'alpha_server.strategies.executor',
-        'alpha_server.strategies.nl_parser',
         # 뉴스 데스크 — 수집·해석·스타일은 함수 안에서 지연 import 한다
         'feedparser',
         'alpha_server.newsdesk',
