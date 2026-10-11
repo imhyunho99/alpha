@@ -328,3 +328,26 @@ def test_started_at_survives_resync(ap):
     M.seed_shadow("kim", "kb", broker=kb, now=later)
     cfg = ap.load_config("kim", M.SHADOW_PORTFOLIO)
     assert cfg["started_at"] == NOW.isoformat() and cfg["seeded_at"] == later.isoformat()
+
+
+def test_partial_price_frames_are_not_cached(monkeypatch):
+    """일부 종목 다운로드가 실패한 결과는 캐시하지 않는다 — 다음 요청에서 다시 받는다."""
+    import pandas as pd
+    from datetime import date
+
+    from alpha_server import account_performance as ap
+    from alpha_server import data_handler
+
+    monkeypatch.setattr(ap, "_price_cache", {})
+    monkeypatch.setattr(data_handler, "load_from_csv", lambda t: None)
+    frame = pd.DataFrame({"Close": [1.0]}, index=pd.to_datetime(["2026-10-09"]))
+    calls = []
+
+    def fake_download(tickers, period="1y"):
+        calls.append(list(tickers))
+        return {"SPY": frame} if len(calls) == 1 else {t: frame for t in tickers}
+
+    monkeypatch.setattr(data_handler, "download_many", fake_download)
+    assert set(ap._load_frames(["SPY", "IEF"], date(2026, 10, 10))) == {"SPY"}
+    assert set(ap._load_frames(["SPY", "IEF"], date(2026, 10, 10))) == {"SPY", "IEF"}
+    assert len(calls) == 2
