@@ -374,6 +374,36 @@ class KbBroker(BaseBroker):
                 "cost_krw": num(row.get("byng_amt")),
                 "pl_krw": num(row.get("val_pl")),
             })
+        # 소수점으로 산 해외 주식은 통합 잔고(SSQM2952)에 안 나온다 — 해외 잔고(SPQM2226)의 소수점거래여부=1 행만 더한다.
+        # 실측(10/13): SPY 0.69주 등 10건이 체결됐는데 통합 잔고엔 없어, 연동이 같은 종목을 또 사려 했다.
+        # 못 읽으면 잔고 전체를 오류로 돌린다 — 보유를 빼먹은 잔고로 계산하면 이미 산 종목을 또 산다.
+        try:
+            frac = self._paged("SPQM2226", {"std_crncy_f": "2", "exch_r_aplc_f": "2", "fee_clsf": "0"},
+                               record="Record2", max_pages=5)
+        except (KbApiError, requests.RequestException) as e:
+            return {"broker": "kb", "error": f"소수점 잔고 조회 실패: {e}"}
+        by_ticker = {p["ticker"]: p for p in positions}
+        for row in frac:
+            if str(row.get("dcml_dl_f", "")).strip() != "1":
+                continue
+            qty = num(row.get("frgn_hld_q_p6"))
+            code = str(row.get("is_cd", "")).strip().upper()
+            if qty <= 0 or not code:
+                continue
+            value = num(row.get("krw_val_amt"))
+            cost = num(row.get("krw_exch_byng_amt")) or num(row.get("byng_amt"))
+            if code in by_ticker:                   # 정수 주식과 소수점 주식을 함께 가진 종목
+                p = by_ticker[code]
+                p["quantity"] += qty
+                p["value_krw"] += value
+                p["cost_krw"] += cost
+                p["pl_krw"] += num(row.get("krw_exch_val_pl"))
+                continue
+            p = {"ticker": code, "name": str(row.get("is_nm", "")).strip(), "currency": "USD",
+                 "quantity": qty, "avg_price": num(row.get("byng_avr_prc_p4")),
+                 "value_krw": value, "cost_krw": cost, "pl_krw": num(row.get("krw_exch_val_pl"))}
+            positions.append(p)
+            by_ticker[code] = p
         cash = num(dom.get("dy_tfnd"))
         foreign_cash = num(dom.get("fcrncy_tfnd_krw_exch_amt"))
         total = num(dom.get("nt_asts_val_amt")) or (cash + foreign_cash + sum(p["value_krw"] for p in positions))

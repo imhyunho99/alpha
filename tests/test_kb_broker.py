@@ -640,3 +640,33 @@ def test_live_not_fractional_rejection_marks_momentum_name(mirror_env, monkeypat
     mirror.sync("kim", "news", {"broker": {"name": "kb", "dry_run": False}}, acct, prices, NOW,
                 broker=Picky(total=10_000_000))
     assert momentum.unbuyable() == {"NVDA"}
+
+
+def test_portfolio_includes_fractional_overseas_holdings():
+    """10/13 실측: 소수점으로 산 SPY 등은 통합 잔고에 없고 해외 잔고(소수점거래여부=1)에만 있다."""
+    kb, fake = _kb()
+    fake.overseas = fake.overseas + [
+        {"is_cd": "SPY         ", "is_nm": "SPDR S&P 500", "frgn_hld_q_p6": "000000000.693113",
+         "krw_val_amt": "000000000000719324", "krw_exch_byng_amt": "739000", "dcml_dl_f": "1"},
+        {"is_cd": "NVDA", "frgn_hld_q_p6": "0.250000", "krw_val_amt": "62750", "dcml_dl_f": "1"},
+    ]
+    snap = kb.get_portfolio()
+    pos = {p["ticker"]: p for p in snap["positions"]}
+    assert pos["SPY"]["quantity"] == pytest.approx(0.693113) and pos["SPY"]["value_krw"] == 719324
+    assert pos["NVDA"]["quantity"] == pytest.approx(0.75)           # 정수·소수점 보유를 합친다
+    assert pos["NVDA"]["value_krw"] == pytest.approx(125500 + 62750)
+    assert snap["total_value"] == 2074500                             # 순자산은 KB 값 그대로
+
+
+def test_portfolio_errors_when_fractional_balance_unreadable():
+    """소수점 잔고를 못 읽은 잔고로 계산하면 이미 산 종목을 또 산다 — 잔고 전체를 오류로."""
+    kb, fake = _kb()
+    real_post = fake.post
+
+    def post(url, json=None, headers=None, timeout=None):
+        if url.endswith("spqm2226"):
+            return _Resp(500, {"dataHeader": {"resultCode": "9999", "processMessage": "점검 중"}})
+        return real_post(url, json, headers, timeout)
+
+    fake.post = post
+    assert "소수점 잔고" in kb.get_portfolio()["error"]
