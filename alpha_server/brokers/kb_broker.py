@@ -54,9 +54,13 @@ def market_open(ticker: str, now=None) -> bool:
 
 
 def fractional_buy_body(ticker: str, amount_krw: float) -> dict:
-    """해외주식 소수점 매수 — 원화 금액 기준, 유사시장가(SKAM2201)."""
+    """해외주식 소수점 매수 — 원화 금액 기준, 유사시장가(SKAM2201).
+
+    금액은 1,000원 단위로 내린다. 실측(10/13): 739,774원 같은 금액은 KB 가
+    '천원(1,000원)단위 금액으로만 주문 가능합니다.' 로 11건 모두 거절했다.
+    """
     return {"trd_dl_ccd": "02", "is_cd": ticker.upper(), "amt_q_clsf": "0", "frgn_ordr_typ_cd": "E",
-            "crncy_ccd": "0", "ordr_amt": str(int(amount_krw))}
+            "crncy_ccd": "0", "ordr_amt": str(int(amount_krw) // 1_000 * 1_000)}
 
 
 def kr_tick_floor(price: float) -> int:
