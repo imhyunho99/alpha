@@ -620,3 +620,23 @@ def test_fractional_amount_is_whole_thousands():
     assert fractional_buy_body("spy", 739_774)["ordr_amt"] == "739000"
     assert fractional_buy_body("AMD", 30_993.6)["ordr_amt"] == "30000"
     assert fractional_buy_body("AAPL", 2_000)["ordr_amt"] == "2000"
+
+
+def test_live_not_fractional_rejection_marks_momentum_name(mirror_env, monkeypatch):
+    """10/13 실측: '소수점매매 가능 종목이 아닙니다.' — 추세 주식이 다음 순위로 바꾸게 기록한다."""
+    mirror, _ = mirror_env
+    from alpha_server.autopilot import momentum
+    from alpha_server.brokers import kb_broker
+
+    monkeypatch.setattr(kb_broker, "market_open", lambda t, now=None: True)
+    acct, prices = _paper()
+
+    class Picky(FakeBroker):
+        def execute_order(self, ticker, action, quantity, amount_krw=None):
+            if ticker == "NVDA":
+                return {"status": "error", "message": "소수점매매 가능 종목이 아닙니다."}
+            return super().execute_order(ticker, action, quantity, amount_krw)
+
+    mirror.sync("kim", "news", {"broker": {"name": "kb", "dry_run": False}}, acct, prices, NOW,
+                broker=Picky(total=10_000_000))
+    assert momentum.unbuyable() == {"NVDA"}

@@ -14,6 +14,7 @@ NOW = datetime(2026, 10, 12, 14, 0, tzinfo=timezone.utc)
 @pytest.fixture(autouse=True)
 def _picks_file(tmp_path, monkeypatch):
     monkeypatch.setattr(M, "PICKS_FILE", str(tmp_path / "momentum_picks.json"))
+    monkeypatch.setattr(M, "UNBUYABLE_FILE", str(tmp_path / "momentum_unbuyable.json"))
 
 
 def test_scores_skip_current_and_last_month():
@@ -102,6 +103,10 @@ def test_momentum_result_buys_core_and_ten_satellites():
     assert all("추세 주식" in d["reason"] for d in res.decisions)
 
 
+def _offline(at):
+    raise RuntimeError("테스트는 네트워크를 안 쓴다")
+
+
 def test_momentum_result_sells_stopped_and_dropped_names():
     from alpha_server.newsdesk.runner import _momentum_result
 
@@ -112,7 +117,7 @@ def test_momentum_result_sells_stopped_and_dropped_names():
     table = {"SPY": 1_000_000.0, "OLD": 30_000.0, **{f"T{i}": 30_000.0 for i in range(10)}}
     table["T0"] = 20_000.0                                                   # -33% → 손절
     j = _Journal()
-    res = _momentum_result(acc, _Prices(table), NOW, 5, None, j)
+    res = _momentum_result(acc, _Prices(table), NOW, 5, None, j, fetch=_offline)
     sold = {d["ticker"] for d in res.decisions if d["action"] in ("sell", "trim")}
     assert {"T0", "OLD"} <= sold and "T0" not in acc.positions and "OLD" not in acc.positions
     assert ("momentum_stop_loss", {"ticker": "T0", "price": 20_000.0, "avg_price": 30_000.0}) in j.events
@@ -129,3 +134,30 @@ def test_mirror_buys_largest_first():
     orders = mirror.plan(weights, real, price, 1.0)
     buys = [o for o in orders if o["action"] == "buy"]
     assert buys and buys[0]["ticker"] == "SPY"
+
+
+def test_unbuyable_names_are_replaced_by_next_rank():
+    """10/13 실측: KB 는 CIEN·LITE 를 소수점으로 안 판다 — 다음 순위로 채운다."""
+    fetch = lambda at: {f"T{i}": float(i) for i in range(40)}
+    picks, _ = M.picks_for(NOW, fetch)
+    assert picks[:2] == ["T39", "T38"] and len(picks) == 10
+    M.mark_unbuyable("T38")
+    M.mark_unbuyable("T38")
+    again, _ = M.picks_for(NOW, fetch)
+    assert "T38" not in again and again[-1] == "T29" and len(again) == 10
+    assert M.unbuyable() == {"T38"}
+
+
+def test_old_cache_without_ranking_is_refetched_once():
+    import json
+
+    with open(M.PICKS_FILE, "w", encoding="utf-8") as f:
+        json.dump({"2026-10": {"picks": [f"T{i}" for i in range(39, 29, -1)], "stopped": ["T35"]}}, f)
+    M.mark_unbuyable("T39")
+    shuffled = {f"T{i}": float(i) for i in range(40)}
+    shuffled["T30"] = 99.0                                                  # 다시 받은 순위가 조금 달라도
+    picks, src = M.picks_for(NOW, lambda at: shuffled)
+    assert picks == [f"T{i}" for i in range(38, 29, -1)] + ["T29"] and "새 선정" in src   # 산 종목은 그대로
+    assert M.stopped(NOW) == {"T35"}                                        # 이번 달 손절 기록은 지키고
+    broken = lambda at: (_ for _ in ()).throw(RuntimeError("x"))
+    assert M.picks_for(NOW, broken)[0] == picks                             # 이제 순위가 남아 다시 안 받는다
