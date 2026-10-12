@@ -611,3 +611,12 @@ def test_dry_run_never_sends_limit_or_cancel():
     kb.place_limit("NVDA", "buy", 1, 100)
     kb.cancel("NVDA", "1")
     assert not [c for c in fake.calls if c[0].startswith(("ssam", "skam"))]
+
+
+def test_fractional_amount_is_whole_thousands():
+    """10/13 실측: KB 는 1,000원 단위 금액만 받는다(739,774원 → 거절)."""
+    from alpha_server.brokers.kb_broker import fractional_buy_body
+
+    assert fractional_buy_body("spy", 739_774)["ordr_amt"] == "739000"
+    assert fractional_buy_body("AMD", 30_993.6)["ordr_amt"] == "30000"
+    assert fractional_buy_body("AAPL", 2_000)["ordr_amt"] == "2000"
