@@ -20,13 +20,26 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 import requests
 
 SERVER_URL = "http://127.0.0.1:8000"
 HEALTH_URL = f"{SERVER_URL}/health"
 STARTUP_TIMEOUT_SEC = 60
+MANAGED_WAIT_SEC = 120      # 로그인 직후 상주 서버가 모델·시세를 불러오는 데 1분 넘게 걸린다
+LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
+
+
+def managed_server_installed() -> bool:
+    """macOS 로그인 때 따로 뜨는 상주 서버(launchd)가 설치돼 있는가.
+
+    10/12 실측: 재부팅 뒤 앱이 상주 서버보다 먼저 떠서 앱 안의 (예전 버전) 서버가 8000번을 잡았다.
+    상주 서버는 포트를 못 잡고, 실계좌 주문이 옛 코드로 돌았다. 상주 서버가 있으면 그걸 기다린다.
+    """
+    try:
+        return any(LAUNCH_AGENTS.glob("*alphaserver*.plist"))
+    except OSError:
+        return False
 
 
 def is_server_up() -> bool:
@@ -136,6 +149,12 @@ def ensure_server_running() -> tuple[bool, str]:
     """
     if is_server_up():
         return True, "이미 실행 중인 서버에 연결했습니다."
+    if managed_server_installed():
+        if _wait_for_health(MANAGED_WAIT_SEC):
+            return True, "상주 서버에 연결했습니다."
+        return False, ("상주 서버(launchd)가 응답하지 않습니다. 앱 안의 서버는 띄우지 않습니다 — "
+                       "두 서버가 한 계좌를 굴리지 않게.\n"
+                       "터미널: launchctl kickstart -k gui/$(id -u)/com.imhyunho99.alphaserver")
 
     # 1) PyInstaller frozen → 외부 바이너리 탐색
     if getattr(sys, "frozen", False):
