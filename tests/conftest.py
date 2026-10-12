@@ -26,6 +26,20 @@ def _silence_notify(monkeypatch, tmp_path):
     monkeypatch.setattr(notify, "_telegram", lambda username, text: False)
 
 
+@_pytest.fixture(autouse=True)
+def _isolate_momentum_files(monkeypatch, tmp_path):
+    """추세 주식 선정·소수점 불가 기록은 실계좌가 쓰는 파일이다. 테스트가 절대 건드리지 않게."""
+    from alpha_server.autopilot import momentum
+
+    monkeypatch.setattr(momentum, "PICKS_FILE", str(tmp_path / "momentum_picks.json"))
+    monkeypatch.setattr(momentum, "UNBUYABLE_FILE", str(tmp_path / "momentum_unbuyable.json"))
+
+    def _no_network(at):
+        raise RuntimeError("테스트에서 S&P 500 시세를 받지 않는다")
+
+    monkeypatch.setattr(momentum, "_fetch_scores", _no_network)
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Qt 위젯·작업 스레드를 파이썬 종료 전에 정리한다.
 

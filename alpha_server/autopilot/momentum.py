@@ -10,6 +10,7 @@
 - 매달(달이 바뀐 뒤 첫 계산) 지금 S&P 500 구성 종목의 12-1개월 수익률(지난달 말 / 12개월 전 말 − 1) 상위 10.
 - 위성 종목은 각 3%. 산 값보다 20% 넘게 빠지면 팔고 그 달은 그 몫을 SPY 에 둔다(백테스트는 월말 자료라 이 손절은 반영 안 됨).
 - 선정 결과는 달마다 파일에 남긴다. 시세를 못 받으면 지난 선정을 쓰고, 그것도 없으면 SPY 100%.
+- 증권사가 소수점으로 안 파는 종목은 건너뛰고 다음 순위를 쓴다(10/13 실측: KB 는 CIEN·LITE 소수점 매매 불가).
 """
 from __future__ import annotations
 
@@ -22,8 +23,10 @@ CORE = "SPY"
 CORE_SHARE = 0.70
 N_PICKS = 10
 STOP_LOSS = 0.20
+N_RANKED = 30              # 못 사는 종목이 빠져도 채울 수 있게 순위를 넉넉히 남긴다
 MIN_MEMBERS = 300          # 구성 종목 시세가 이만큼은 있어야 순위를 믿는다
 PICKS_FILE = os.path.expanduser("~/AlphaModels/momentum_picks.json")
+UNBUYABLE_FILE = os.path.expanduser("~/AlphaModels/momentum_unbuyable.json")
 
 
 def month_key(at: datetime) -> str:
@@ -74,27 +77,59 @@ def _fetch_scores(at: datetime) -> dict[str, float]:
     return scores_from_closes(closes, at)
 
 
+def unbuyable() -> set[str]:
+    try:
+        with open(UNBUYABLE_FILE, encoding="utf-8") as f:
+            return set(json.load(f))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return set()
+
+
+def mark_unbuyable(ticker: str) -> None:
+    """증권사가 소수점 매매를 안 받는 종목. 다음 계산부터 다음 순위로 바꾼다."""
+    cur = unbuyable()
+    if ticker in cur:
+        return
+    os.makedirs(os.path.dirname(UNBUYABLE_FILE), exist_ok=True)
+    tmp = UNBUYABLE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(sorted(cur | {ticker}), f)
+    os.replace(tmp, UNBUYABLE_FILE)
+
+
+def _choose(ranked: list[str]) -> list[str]:
+    skip = unbuyable()
+    return [t for t in ranked if t not in skip][:N_PICKS]
+
+
 def picks_for(at: datetime, fetch: Optional[Callable[[datetime], dict[str, float]]] = None) -> tuple[list[str], str]:
     """(이번 달 위성 종목, 출처 설명). 달마다 한 번 계산해 파일에 남긴다."""
     data = _load()
     key = month_key(at)
     cur = data.get(key)
-    if cur and cur.get("picks"):
-        return list(cur["picks"]), f"{key} 선정"
+    if cur and cur.get("ranked"):
+        return _choose(cur["ranked"]), f"{key} 선정"
     try:
         scores = (fetch or _fetch_scores)(at)
-        top = sorted(scores, key=scores.get, reverse=True)[:N_PICKS]
-        if len(top) < N_PICKS:
+        ranked = sorted(scores, key=scores.get, reverse=True)[:N_RANKED]
+        if len(ranked) < N_PICKS:
             raise RuntimeError(f"점수 {len(scores)}종목")
     except Exception as exc:
-        prev = [k for k in sorted(data) if k < key and data[k].get("picks")]
+        if cur and cur.get("picks"):            # 순위 없이 남은 예전 기록 — 다시 못 받으면 그대로 쓴다
+            return _choose(cur["picks"]), f"{key} 선정"
+        prev = [k for k in sorted(data) if k < key and (data[k].get("ranked") or data[k].get("picks"))]
         if prev:
-            return list(data[prev[-1]]["picks"]), f"{key} 선정 실패({type(exc).__name__}) — {prev[-1]} 선정 유지"
+            old = data[prev[-1]]
+            return _choose(old.get("ranked") or old["picks"]), f"{key} 선정 실패({type(exc).__name__}) — {prev[-1]} 선정 유지"
         return [], f"{key} 선정 실패({type(exc).__name__}) — SPY 만"
-    data[key] = {"picks": top, "scores": {t: round(scores[t], 4) for t in top},
-                 "at": at.isoformat(), "stopped": []}
+    if cur and cur.get("picks"):
+        # 순위 없이 남은 이번 달 기록(10/11 선정) — 이미 산 종목은 그대로 두고 뒤에 다음 순위만 잇는다
+        ranked = list(cur["picks"]) + [t for t in ranked if t not in cur["picks"]]
+    data[key] = {**(cur or {}), "picks": ranked[:N_PICKS], "ranked": ranked,
+                 "scores": {t: round(scores[t], 4) for t in ranked if t in scores},
+                 "at": at.isoformat(), "stopped": (cur or {}).get("stopped", [])}
     _save(data)
-    return top, f"{key} 새 선정"
+    return _choose(ranked), f"{key} 새 선정"
 
 
 def stopped(at: datetime) -> set[str]:

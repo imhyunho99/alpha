@@ -35,6 +35,7 @@ MAX_ORDER_SHARE = 0.40                 # 주문 한 건이 계좌의 40% 를 넘
 FLOW_MIN_KRW = 50_000                  # 이보다 작은 현금 변화는 입출금으로 보지 않는다(수수료·배당 잡음)
 MIN_ORDER_KRW = 50_000
 DAILY_RESYNC = timedelta(hours=24)
+NOT_FRACTIONAL = "소수점매매 가능 종목이 아닙니다"   # KB 거절 문구(10/13 실측)
 KEEP = 200
 
 
@@ -354,6 +355,10 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
                 res = broker.execute_order(o["ticker"], o["action"], o["quantity"])
             o.update(status=res.get("status", "error"), message=res.get("message", ""),
                      order_no=res.get("order_no", ""))
+            if live and o["status"] != "success" and NOT_FRACTIONAL in o["message"]:
+                from . import momentum
+
+                momentum.mark_unbuyable(o["ticker"])   # 추세 주식은 다음 계산에서 다음 순위로 바꾼다
             if live and o["action"] == "buy" and o["status"] == "success":
                 rm.record_buy()   # 기록만 한 가상 매수는 하루 매수 한도에 세지 않는다(10/9: 기록 20건이 한도를 채움)
             if live and o["status"] == "success":
