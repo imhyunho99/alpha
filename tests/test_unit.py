@@ -312,3 +312,28 @@ def test_server_launcher_prefers_embedded_path(monkeypatch, tmp_path):
     assert paths, "임베드된 AlphaServer 경로를 하나 이상 발견해야 한다"
     # 첫 번째 후보가 임베드된 위치여야 한다 (시스템 경로보다 우선)
     assert paths[0] == embedded_server.resolve()
+
+
+def test_server_launcher_waits_for_managed_server(monkeypatch, tmp_path):
+    """10/12 실측: 재부팅 뒤 앱 안의 예전 서버가 상주 서버보다 먼저 8000번을 잡았다."""
+    from alpha import server_launcher
+
+    agents = tmp_path / "LaunchAgents"
+    agents.mkdir()
+    monkeypatch.setattr(server_launcher, "LAUNCH_AGENTS", agents)
+    monkeypatch.setattr(server_launcher, "is_server_up", lambda: False)
+    monkeypatch.setattr(server_launcher.sys, "frozen", True, raising=False)
+    spawned = []
+    monkeypatch.setattr(server_launcher.subprocess, "Popen", lambda *a, **k: spawned.append(a))
+    assert not server_launcher.managed_server_installed()
+
+    (agents / "com.imhyunho99.alphaserver.plist").write_text("<plist/>")
+    assert server_launcher.managed_server_installed()
+    waited = []
+    monkeypatch.setattr(server_launcher, "_wait_for_health", lambda timeout: waited.append(timeout) or True)
+    ok, msg = server_launcher.ensure_server_running()
+    assert ok and "상주 서버" in msg and waited == [server_launcher.MANAGED_WAIT_SEC]
+    monkeypatch.setattr(server_launcher, "_wait_for_health", lambda timeout: False)
+    ok, msg = server_launcher.ensure_server_running()
+    assert not ok and "launchctl" in msg
+    assert spawned == []                               # 앱 안의 서버는 띄우지 않는다
