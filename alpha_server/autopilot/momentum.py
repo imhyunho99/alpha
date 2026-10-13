@@ -11,6 +11,10 @@
 - 위성 종목은 각 3%. 산 값보다 20% 넘게 빠지면 팔고 그 달은 그 몫을 SPY 에 둔다(백테스트는 월말 자료라 이 손절은 반영 안 됨).
 - 선정 결과는 달마다 파일에 남긴다. 시세를 못 받으면 지난 선정을 쓰고, 그것도 없으면 SPY 100%.
 - 증권사가 소수점으로 안 파는 종목은 건너뛰고 다음 순위를 쓴다(10/13 실측: KB 는 CIEN·LITE 소수점 매매 불가).
+
+튜닝 후보(scripts/momentum_tuning.py, docs/MOMENTUM_TUNING_PLAN.md) — 기본값은 위 규칙 그대로, 설정으로만 켠다:
+- 설정 "momentum_score": "resid" — 잔차 모멘텀(시장 움직임을 뺀 12-1개월 수익 ÷ 잔차 변동성). 바꾼 달의 다음 달 선정부터.
+- 설정 "momentum_stop_loss": null — 손절 끔. 숫자면 그 비율.
 """
 from __future__ import annotations
 
@@ -61,19 +65,43 @@ def scores_from_closes(closes, at: datetime) -> dict[str, float]:
     return {t: float(v) for t, v in score.dropna().items()}
 
 
-def _fetch_scores(at: datetime) -> dict[str, float]:
+def resid_scores_from_closes(closes, core, at: datetime) -> dict[str, float]:
+    """잔차 모멘텀(Blitz-Huij-Martens 2011). 36개월 시장모형(core 대비 베타)의 잔차를 12-1개월 합 ÷ 잔차 표준편차.
+
+    scripts/momentum_tuning.py Signals.resid 와 같은 식 — 백테스트와 실계좌가 같은 종목을 고르게.
+    """
+    import pandas as pd
+
+    m = closes.resample("ME").last()
+    rm = core.resample("ME").last()
+    cut = pd.Timestamp(at.year, at.month, 1)
+    m, rm = m[m.index < cut], rm[rm.index < cut].reindex(m.index[m.index < cut])
+    if len(m) < 48:                                               # 베타 24개월 + 잔차 변동성 24개월
+        return {}
+    r, rm = m.pct_change(fill_method=None), rm.pct_change(fill_method=None)
+    beta = r.rolling(36, min_periods=24).cov(rm).div(rm.rolling(36, min_periods=24).var(), axis=0)
+    resid = r.sub(beta.mul(rm, axis=0))
+    score = (resid.shift(1).rolling(11).sum() / resid.rolling(36, min_periods=24).std()).iloc[-1]
+    return {t: float(v) for t, v in score.dropna().items()}
+
+
+def _fetch_scores(at: datetime, score: str = "mom") -> dict[str, float]:
     import pandas as pd
 
     from ..asset_screener import get_sp500_tickers
     from ..data_handler import download_many
 
     tickers = sorted(set(get_sp500_tickers()) - {CORE})
-    frames = download_many(tickers, period="2y")
+    frames = download_many(tickers + ([CORE] if score == "resid" else []), period="5y" if score == "resid" else "2y")
     closes = pd.DataFrame({t: f["Close"] for t, f in frames.items()
                            if f is not None and not f.empty and "Close" in f})
     if closes.shape[1] < MIN_MEMBERS:
         raise RuntimeError(f"S&P 500 시세 {closes.shape[1]}종목만 받음")
     closes.index = pd.to_datetime(closes.index).tz_localize(None) if getattr(closes.index, "tz", None) else closes.index
+    if score == "resid":
+        if CORE not in closes:
+            raise RuntimeError(f"{CORE} 시세 없음")
+        return resid_scores_from_closes(closes.drop(columns=[CORE]), closes[CORE], at)
     return scores_from_closes(closes, at)
 
 
@@ -102,15 +130,16 @@ def _choose(ranked: list[str]) -> list[str]:
     return [t for t in ranked if t not in skip][:N_PICKS]
 
 
-def picks_for(at: datetime, fetch: Optional[Callable[[datetime], dict[str, float]]] = None) -> tuple[list[str], str]:
-    """(이번 달 위성 종목, 출처 설명). 달마다 한 번 계산해 파일에 남긴다."""
+def picks_for(at: datetime, fetch: Optional[Callable[[datetime], dict[str, float]]] = None,
+              score: str = "mom") -> tuple[list[str], str]:
+    """(이번 달 위성 종목, 출처 설명). 달마다 한 번 계산해 파일에 남긴다. 점수 방식을 바꿔도 이미 정한 달은 그대로."""
     data = _load()
     key = month_key(at)
     cur = data.get(key)
     if cur and cur.get("ranked"):
         return _choose(cur["ranked"]), f"{key} 선정"
     try:
-        scores = (fetch or _fetch_scores)(at)
+        scores = fetch(at) if fetch else _fetch_scores(at, score)
         ranked = sorted(scores, key=scores.get, reverse=True)[:N_RANKED]
         if len(ranked) < N_PICKS:
             raise RuntimeError(f"점수 {len(scores)}종목")
@@ -127,7 +156,7 @@ def picks_for(at: datetime, fetch: Optional[Callable[[datetime], dict[str, float
         ranked = list(cur["picks"]) + [t for t in ranked if t not in cur["picks"]]
     data[key] = {**(cur or {}), "picks": ranked[:N_PICKS], "ranked": ranked,
                  "scores": {t: round(scores[t], 4) for t in ranked if t in scores},
-                 "at": at.isoformat(), "stopped": (cur or {}).get("stopped", [])}
+                 "score": score, "at": at.isoformat(), "stopped": (cur or {}).get("stopped", [])}
     _save(data)
     return _choose(ranked), f"{key} 새 선정"
 
@@ -153,12 +182,14 @@ def targets(picks: list[str], out: set[str] = frozenset()) -> dict[str, float]:
     return tgt
 
 
-def stop_losses(account, prices: dict[str, float], picks: list[str]) -> list[str]:
-    """산 값보다 STOP_LOSS 넘게 빠진 위성 종목."""
+def stop_losses(account, prices: dict[str, float], picks: list[str], stop: Optional[float] = STOP_LOSS) -> list[str]:
+    """산 값보다 stop 넘게 빠진 위성 종목. stop 이 None 이면 손절하지 않는다."""
     out = []
+    if not stop:
+        return out
     for t, pos in account.positions.items():
         if t == CORE or t not in picks or t not in prices or pos.avg_price <= 0:
             continue
-        if prices[t] < pos.avg_price * (1 - STOP_LOSS):
+        if prices[t] < pos.avg_price * (1 - stop):
             out.append(t)
     return out

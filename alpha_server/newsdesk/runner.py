@@ -207,7 +207,8 @@ def _run_portfolio_locked(user, portfolio, recent, prices, now, watch, model_fn)
                                     Journal(actor=f"{user}/{portfolio}"))
     elif cfg.get("strategy") == "momentum":
         result = _momentum_result(account, prices, now, int(cfg["temperature"]), last_rebalance,
-                                  Journal(actor=f"{user}/{portfolio}"))
+                                  Journal(actor=f"{user}/{portfolio}"), score=cfg.get("momentum_score", "mom"),
+                                  stop=cfg.get("momentum_stop_loss", "default"))
     else:
         result = None
     own_watch = [t for t in watch if t in set(style.focus_tickers or DEFAULT_WATCH) | set(account.positions)]
@@ -274,7 +275,8 @@ def _allocation_result(account, prices, now, temperature, last_rebalance, journa
     return NewsStepResult(now, account.equity(snap), fills, decisions)
 
 
-def _momentum_result(account, prices, now, temperature, last_rebalance, journal, fetch=None):
+def _momentum_result(account, prices, now, temperature, last_rebalance, journal, fetch=None,
+                     score="mom", stop="default"):
     """추세 주식 전략(SPY 70 + S&P 500 모멘텀 상위 10 각 3%). 뉴스는 매매에 쓰지 않는다."""
     import math
 
@@ -282,13 +284,13 @@ def _momentum_result(account, prices, now, temperature, last_rebalance, journal,
     from ..autopilot.allocation import allocation_step
     from .engine import NewsStepResult
 
-    picks, source = momentum.picks_for(now, fetch)
+    picks, source = momentum.picks_for(now, fetch, score=score)
     tickers = sorted(set(picks) | {momentum.CORE} | set(account.positions))
     snap = {t: p for t, p in prices.get_many(tickers, now).items()
             if isinstance(p, (int, float)) and math.isfinite(p) and p > 0}
     if any(t not in snap for t in set(account.positions) | {momentum.CORE}):
         return NewsStepResult(now, account.equity(snap), skipped="시세 누락")
-    for t in momentum.stop_losses(account, snap, picks):
+    for t in momentum.stop_losses(account, snap, picks, momentum.STOP_LOSS if stop == "default" else stop):
         momentum.mark_stopped(now, t)
         journal.record("momentum_stop_loss", ticker=t, price=snap[t], avg_price=account.positions[t].avg_price)
     # 시세를 못 받은 위성 종목은 이번엔 빼고(그 몫은 SPY) 다음 계산에 다시 본다

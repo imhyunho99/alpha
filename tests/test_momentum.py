@@ -161,3 +161,29 @@ def test_old_cache_without_ranking_is_refetched_once():
     assert M.stopped(NOW) == {"T35"}                                        # 이번 달 손절 기록은 지키고
     broken = lambda at: (_ for _ in ()).throw(RuntimeError("x"))
     assert M.picks_for(NOW, broken)[0] == picks                             # 이제 순위가 남아 다시 안 받는다
+
+
+def test_resid_scores_remove_market_move():
+    """잔차 모멘텀: 시장과 같이 오른 종목보다 시장과 무관하게 꾸준히 오른 종목을 높게 친다."""
+    idx = pd.date_range("2021-06-01", "2026-10-10", freq="D")
+    rng = np.random.default_rng(0)
+    mkt = pd.Series(np.cumprod(1 + rng.normal(0.0004, 0.01, len(idx))), index=idx)
+    beta2 = mkt ** 2                                                          # 시장을 두 배로 탄 종목
+    own = mkt * pd.Series(np.linspace(1.0, 1.6, len(idx)), index=idx)        # 시장 + 자기 추세
+    s = M.resid_scores_from_closes(pd.DataFrame({"BETA": beta2, "OWN": own}), mkt, NOW)
+    assert s["OWN"] > s["BETA"]
+    assert M.resid_scores_from_closes(pd.DataFrame({"X": own[-1200:]}), mkt[-1200:], NOW) == {}   # 4년 안 되면 안 고른다
+
+
+def test_score_method_is_recorded_and_month_kept():
+    picks, _ = M.picks_for(NOW, lambda at: {f"T{i}": float(i) for i in range(30)}, score="resid")
+    assert M._load()["2026-10"]["score"] == "resid"
+    again, _ = M.picks_for(NOW, lambda at: {f"T{i}": -float(i) for i in range(30)}, score="mom")
+    assert again == picks                                                     # 달 중간에 방식을 바꿔도 이번 달 선정은 그대로
+
+
+def test_stop_loss_can_be_turned_off():
+    acc = PaperAccount(cash=0)
+    acc.positions = {"A": Position("A", 1, 100.0)}
+    assert M.stop_losses(acc, {"A": 50.0}, ["A"], stop=None) == []
+    assert M.stop_losses(acc, {"A": 85.0}, ["A"], stop=0.10) == ["A"]

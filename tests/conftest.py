@@ -34,7 +34,7 @@ def _isolate_momentum_files(monkeypatch, tmp_path):
     monkeypatch.setattr(momentum, "PICKS_FILE", str(tmp_path / "momentum_picks.json"))
     monkeypatch.setattr(momentum, "UNBUYABLE_FILE", str(tmp_path / "momentum_unbuyable.json"))
 
-    def _no_network(at):
+    def _no_network(at, score="mom"):
         raise RuntimeError("테스트에서 S&P 500 시세를 받지 않는다")
 
     monkeypatch.setattr(momentum, "_fetch_scores", _no_network)
