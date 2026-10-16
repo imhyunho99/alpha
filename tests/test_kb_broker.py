@@ -44,6 +44,7 @@ class FakeKb:
                           "val_amt": "000000000810000"},
                          {"clsf": "외화증권", "crncy_cd": "USD", "is_cd": "NVDA", "hld_q": "0",
                           "hld_q_p6": "0.500000", "val_amt": "125500"}]
+        self.total = 2_074_500   # 순자산 = 현금 + 외화 + 종목 평가액 (KB 는 미결제 소수점 주식도 넣어 준다)
         self.overseas = [{"is_cd": "NVDA        ", "frgn_hld_q_p6": "0.500000", "byng_avr_prc_p4": "170.0000",
                           "krw_val_amt": "125500"}]
 
@@ -76,7 +77,7 @@ class FakeKb:
             return _Resp(200, _ok({"ordr_no": "0040000638", "o_msg": "정상적으로 주문 완료되었습니다."}))
         if api == "ssqm2952":
             return _Resp(200, _ok({"dy_tfnd": "000000001000000", "fcrncy_tfnd_krw_exch_amt": "139000",
-                                   "nt_asts_val_amt": "2074500", "Record1": self.domestic}))
+                                   "nt_asts_val_amt": str(self.total), "Record1": self.domestic}))
         if api == "spqm2226":
             return _Resp(200, _ok({"Record1": [{"tfnd_val_amt": "139000"}], "Record2": self.overseas}))
         return _Resp(404, {"error": api})
@@ -650,12 +651,32 @@ def test_portfolio_includes_fractional_overseas_holdings():
          "krw_val_amt": "000000000000719324", "krw_exch_byng_amt": "739000", "dcml_dl_f": "1"},
         {"is_cd": "NVDA", "frgn_hld_q_p6": "0.250000", "krw_val_amt": "62750", "dcml_dl_f": "1"},
     ]
+    fake.total = 2_074_500 + 719_324 + 62_750
     snap = kb.get_portfolio()
     pos = {p["ticker"]: p for p in snap["positions"]}
     assert pos["SPY"]["quantity"] == pytest.approx(0.693113) and pos["SPY"]["value_krw"] == 719324
     assert pos["NVDA"]["quantity"] == pytest.approx(0.75)           # 정수·소수점 보유를 합친다
     assert pos["NVDA"]["value_krw"] == pytest.approx(125500 + 62750)
-    assert snap["total_value"] == 2074500                             # 순자산은 KB 값 그대로
+    assert snap["total_value"] == fake.total                          # 순자산은 KB 값 그대로
+
+
+def test_settled_fractional_holdings_are_not_counted_twice():
+    """10/14 실측: 결제가 끝난 소수점 주식은 통합 잔고와 해외 잔고 둘 다에 나온다 — 더하면 두 배가 돼 절반을 팔려 했다."""
+    kb, fake = _kb()
+    fake.domestic = fake.domestic + [{"clsf": "외화증권", "crncy_cd": "USD", "is_cd": "SPY", "hld_q": "0",
+                                      "hld_q_p6": "00000000.693113", "val_amt": "000000000000721905"}]
+    fake.overseas = fake.overseas + [{"is_cd": "SPY", "frgn_hld_q_p6": "000000000.693113",
+                                      "krw_val_amt": "000000000000720072", "dcml_dl_f": "1"}]
+    fake.total = 2_074_500 + 721_905
+    pos = {p["ticker"]: p for p in kb.get_portfolio()["positions"]}
+    assert pos["SPY"]["quantity"] == pytest.approx(0.693113) and pos["SPY"]["value_krw"] == 721905
+    assert pos["NVDA"]["quantity"] == pytest.approx(0.5)
+
+
+def test_portfolio_errors_when_holdings_do_not_add_up():
+    kb, fake = _kb()
+    fake.overseas = fake.overseas + [{"is_cd": "SPY", "frgn_hld_q_p6": "5.0", "krw_val_amt": "5000000", "dcml_dl_f": "1"}]
+    assert "합계 불일치" in kb.get_portfolio()["error"]
 
 
 def test_portfolio_errors_when_fractional_balance_unreadable():
