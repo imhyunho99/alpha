@@ -364,6 +364,7 @@ def test_sleeve_resync_rebuilds_from_real_account(ap_dir):
                 for row in r._payload["dataBody"]["Record1"]:
                     if row["is_cd"] == "NVDA":
                         row.update(hld_q="12", val_amt="3000000")
+                r._payload["dataBody"]["nt_asts_val_amt"] = "8500000"
             return r
 
     kb2 = KbBroker("k", "s", dry_run=True, session=Bought(), suffix_fn=lambda c: ".KS")

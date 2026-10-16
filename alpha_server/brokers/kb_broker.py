@@ -374,7 +374,7 @@ class KbBroker(BaseBroker):
                 "cost_krw": num(row.get("byng_amt")),
                 "pl_krw": num(row.get("val_pl")),
             })
-        # 소수점으로 산 해외 주식은 통합 잔고(SSQM2952)에 안 나온다 — 해외 잔고(SPQM2226)의 소수점거래여부=1 행만 더한다.
+        # 막 산 소수점 해외 주식은 결제 전까지 통합 잔고(SSQM2952)에 안 나온다 — 해외 잔고(SPQM2226)로 채운다.
         # 실측(10/13): SPY 0.69주 등 10건이 체결됐는데 통합 잔고엔 없어, 연동이 같은 종목을 또 사려 했다.
         # 못 읽으면 잔고 전체를 오류로 돌린다 — 보유를 빼먹은 잔고로 계산하면 이미 산 종목을 또 산다.
         try:
@@ -382,31 +382,35 @@ class KbBroker(BaseBroker):
                                record="Record2", max_pages=5)
         except (KbApiError, requests.RequestException) as e:
             return {"broker": "kb", "error": f"소수점 잔고 조회 실패: {e}"}
-        by_ticker = {p["ticker"]: p for p in positions}
+        # 해외 잔고는 정수·소수점 행을 모두 준다. 종목별로 합쳐, 통합 잔고보다 많을 때만(미결제 소수점분) 그 값으로 쓴다.
+        # 실측(10/14): 결제가 끝난 소수점 주식은 통합 잔고에도 나와, 그냥 더하면 두 배가 된다 → 보유 절반을 팔려 함(KB 거절).
+        overseas: dict[str, dict] = {}
         for row in frac:
-            if str(row.get("dcml_dl_f", "")).strip() != "1":
-                continue
             qty = num(row.get("frgn_hld_q_p6"))
             code = str(row.get("is_cd", "")).strip().upper()
             if qty <= 0 or not code:
                 continue
-            value = num(row.get("krw_val_amt"))
-            cost = num(row.get("krw_exch_byng_amt")) or num(row.get("byng_amt"))
-            if code in by_ticker:                   # 정수 주식과 소수점 주식을 함께 가진 종목
-                p = by_ticker[code]
-                p["quantity"] += qty
-                p["value_krw"] += value
-                p["cost_krw"] += cost
-                p["pl_krw"] += num(row.get("krw_exch_val_pl"))
-                continue
-            p = {"ticker": code, "name": str(row.get("is_nm", "")).strip(), "currency": "USD",
-                 "quantity": qty, "avg_price": num(row.get("byng_avr_prc_p4")),
-                 "value_krw": value, "cost_krw": cost, "pl_krw": num(row.get("krw_exch_val_pl"))}
-            positions.append(p)
-            by_ticker[code] = p
+            o = overseas.setdefault(code, {"ticker": code, "name": str(row.get("is_nm", "")).strip(), "currency": "USD",
+                                           "quantity": 0.0, "avg_price": num(row.get("byng_avr_prc_p4")),
+                                           "value_krw": 0.0, "cost_krw": 0.0, "pl_krw": 0.0})
+            o["quantity"] += qty
+            o["value_krw"] += num(row.get("krw_val_amt"))
+            o["cost_krw"] += num(row.get("krw_exch_byng_amt")) or num(row.get("byng_amt"))
+            o["pl_krw"] += num(row.get("krw_exch_val_pl"))
+        by_ticker = {p["ticker"]: p for p in positions}
+        for code, o in overseas.items():
+            p = by_ticker.get(code)
+            if p is None:
+                positions.append(o)
+            elif o["quantity"] > p["quantity"] + 1e-9:
+                p.update({k: o[k] for k in ("quantity", "value_krw", "cost_krw", "pl_krw")})
         cash = num(dom.get("dy_tfnd"))
         foreign_cash = num(dom.get("fcrncy_tfnd_krw_exch_amt"))
-        total = num(dom.get("nt_asts_val_amt")) or (cash + foreign_cash + sum(p["value_krw"] for p in positions))
+        summed = cash + foreign_cash + sum(p["value_krw"] for p in positions)
+        total = num(dom.get("nt_asts_val_amt")) or summed
+        if total > 0 and abs(summed - total) > 0.05 * total:
+            # 종목을 두 번 세거나 빠뜨린 잔고로 주문하면 사고가 난다(10/14 두 배 잔고 → 절반 매도 시도) — 멈춘다
+            return {"broker": "kb", "error": f"잔고 합계 불일치: 종목+현금 {summed:,.0f}원 vs 순자산 {total:,.0f}원"}
         return {"broker": "kb", "currency": "KRW", "cash": cash, "foreign_cash_krw": foreign_cash,
                 "positions": positions, "total_value": total}
 
