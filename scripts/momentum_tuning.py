@@ -13,7 +13,8 @@
     L = -(CAGR - CAGR_SPY) + 0.5 * max(0, MDD - MDD_SPY)
     'SPY 를 그냥 사는 것보다 얼마나 더 벌었나'에서, SPY 보다 깊게 빠진 낙폭의 절반을 벌점으로 뺀다.
 채택 기준(셋 다): 전반·후반 10년 모두 기준선(B0)보다 L 이 작다 / 5년 창(1년씩 이동) 60% 이상에서 이긴다 /
-    B0 대비 월 초과수익의 Deflated Sharpe ≥ 0.95 (시도 횟수 = 이 파일 후보 + momentum_study 의 5개).
+    B0 대비 월 초과수익의 Deflated Sharpe ≥ 0.95 또는 t ≥ 2.8 (시도 횟수 = 이 파일 후보 + momentum_study 의 5개).
+판정 단계(계획서 6절, 문헌 반영 10/16): 채택 = 셋 다 / 탈락 = DSR < 0.5 이고 열세 반복(5년창 승률 < 60% 또는 초과 ≤ 0) / 관찰 = 그 밖.
 """
 from __future__ import annotations
 
@@ -327,12 +328,27 @@ def main():
             a = act[name].dropna()
             r["초과_연%"] = round(a.mean() * 1200, 2)
             r["DSR"] = round(deflated_sharpe(a, n_trials, sr_trials), 3)
-            r["채택"] = bool(r["L_전반"] < rows[0]["L_전반"] and r["L_후반"] < rows[0]["L_후반"]
-                           and r["5년창_승률%"] >= 60 and r["DSR"] >= 0.95)
+            r["t"] = round(float(a.mean() / a.std() * math.sqrt(len(a))), 2)
+            halves = r["L_전반"] < rows[0]["L_전반"] and r["L_후반"] < rows[0]["L_후반"]
+            steady = r["5년창_승률%"] >= 60
+            if halves and steady and (r["DSR"] >= 0.95 or r["t"] >= 2.8):
+                r["판정"] = "채택"
+            elif r["DSR"] < 0.5 and (not steady or r["초과_연%"] <= 0):
+                r["판정"] = "탈락"                                   # 유의하지도 않고 열세가 반복된다
+            else:
+                r["판정"] = "관찰"
+        r["샤프"] = round(float(s.pct_change().mean() / s.pct_change().std() * math.sqrt(12)), 3)
+        r["최근5년_SPY대비%"] = round(100 * (cagr_mdd(s, s.index[-1] - pd.DateOffset(years=5))[0]
+                                       - cagr_mdd(spy, s.index[-1] - pd.DateOffset(years=5))[0]), 1)
         rows.append(r)
     cs, ms = cagr_mdd(spy)
     print(f"\nSPY 원화  CAGR {cs * 100:.1f}%  MDD {ms * 100:.1f}%   (5년 창 {len(wins)}개, 시도 {n_trials}회 보정)")
     print(pd.DataFrame(rows).set_index("name").to_string())
+    # 업종 쏠림(문헌 미확인 부분): 최근 5년 B0 위성 10종목 중 가장 많은 업종의 평균 종목 수
+    recent = [t for t in sig.M.index if t >= sig.M.index[-1] - pd.DateOffset(years=5)]
+    top_share = [max(pd.Series([sectors.get(k, k) for k in ranked(sig, sig.mom)(t, set())[:10]]).value_counts())
+                 for t in recent]
+    print(f"  [업종 쏠림] 최근 5년 B0 위성 중 최다 업종 평균 {np.mean(top_share):.1f}종목, 최대 {max(top_share)}종목")
     for core in (0.5, 0.6, 0.8, 0.9):
         s, _ = simulate(sig, ranked(sig, sig.mom), fxd, core=core)
         c, m = cagr_mdd(s)
