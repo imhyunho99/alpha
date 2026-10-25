@@ -249,9 +249,14 @@ FINANCIAL_API_KEY=YOUR_API_KEY_HERE
   ./start_alpha.sh
 ```
 
+## ⚠️ 면책
+
+Alpha는 투자 조언이 아니다. 분석·추천·자동매매 결과는 틀릴 수 있고, 실계좌 주문으로 생긴 손실은 전적으로 사용자 책임이다.
+실거래 전에 반드시 모의(`dry_run`)로 충분히 확인할 것.
+
 ## 📝 라이선스
 
-이 프로젝트는 개인 사용 목적으로 제작되었습니다.
+[MIT](LICENSE) © 2026 imhyunho99. 함께 쓰는 라이브러리(PySide6 LGPL 등)는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 참고.
 
 ## 🤝 기여
 
