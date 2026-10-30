@@ -47,6 +47,7 @@ class FakeKb:
         self.total = 2_074_500   # 순자산 = 현금 + 외화 + 종목 평가액 (KB 는 미결제 소수점 주식도 넣어 준다)
         self.overseas = [{"is_cd": "NVDA        ", "frgn_hld_q_p6": "0.500000", "byng_avr_prc_p4": "170.0000",
                           "krw_val_amt": "125500"}]
+        self.settled = None   # nxt2_dy_tfnd (D+2 예수금). None 이면 응답에 안 넣는다
 
     def post(self, url, json=None, headers=None, timeout=None):
         api = url.rsplit("/", 1)[-1]
@@ -76,8 +77,11 @@ class FakeKb:
         if api in ("ssam1801", "ssam1802", "skam2101", "skam2201"):
             return _Resp(200, _ok({"ordr_no": "0040000638", "o_msg": "정상적으로 주문 완료되었습니다."}))
         if api == "ssqm2952":
-            return _Resp(200, _ok({"dy_tfnd": "000000001000000", "fcrncy_tfnd_krw_exch_amt": "139000",
-                                   "nt_asts_val_amt": str(self.total), "Record1": self.domestic}))
+            body = {"dy_tfnd": "000000001000000", "fcrncy_tfnd_krw_exch_amt": "139000",
+                    "nt_asts_val_amt": str(self.total), "Record1": self.domestic}
+            if self.settled is not None:
+                body["nxt2_dy_tfnd"] = f"{self.settled:018d}"
+            return _Resp(200, _ok(body))
         if api == "spqm2226":
             return _Resp(200, _ok({"Record1": [{"tfnd_val_amt": "139000"}], "Record2": self.overseas}))
         return _Resp(404, {"error": api})
@@ -677,6 +681,18 @@ def test_portfolio_errors_when_holdings_do_not_add_up():
     kb, fake = _kb()
     fake.overseas = fake.overseas + [{"is_cd": "SPY", "frgn_hld_q_p6": "5.0", "krw_val_amt": "5000000", "dcml_dl_f": "1"}]
     assert "합계 불일치" in kb.get_portfolio()["error"]
+
+
+def test_portfolio_uses_settled_cash_while_a_buy_is_unsettled():
+    """실측(10/30): 직접 산 삼성전자 대금 222만원이 결제 전이라 오늘 예수금(dy_tfnd)엔 남아 있고
+    주식은 이미 잡혀 이중 계산 → '합계 불일치'로 멈췄다. KB 순자산은 D+2 예수금 기준이다."""
+    kb, fake = _kb()
+    fake.settled = 400_000                       # 오늘 예수금 100만 중 60만이 결제 대기 중인 매수 대금
+    fake.total = 400_000 + 139_000 + 810_000 + 125_500
+    snap = kb.get_portfolio()
+    assert "error" not in snap
+    assert snap["cash"] == 400_000               # 쓸 수 있는 돈은 결제 기준
+    assert snap["total_value"] == fake.total
 
 
 def test_portfolio_errors_when_fractional_balance_unreadable():
