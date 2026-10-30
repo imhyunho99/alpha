@@ -404,7 +404,10 @@ class KbBroker(BaseBroker):
                 positions.append(o)
             elif o["quantity"] > p["quantity"] + 1e-9:
                 p.update({k: o[k] for k in ("quantity", "value_krw", "cost_krw", "pl_krw")})
-        cash = num(dom.get("dy_tfnd"))
+        # 현금은 결제 기준(D+2 예수금). 오늘 예수금(dy_tfnd)엔 체결됐지만 결제 전인 매수 대금이 아직
+        # 남아 있어, 이미 잡힌 주식과 이중 계산된다. KB 순자산(nt_asts_val_amt)도 D+2 기준이다.
+        # 실측(10/30): 직접 산 삼성전자 222만원 → 종목+현금 1,222만 vs 순자산 1,001만, 주문 계산이 멈춤.
+        cash = num(dom["nxt2_dy_tfnd"]) if "nxt2_dy_tfnd" in dom else num(dom.get("dy_tfnd"))
         foreign_cash = num(dom.get("fcrncy_tfnd_krw_exch_amt"))
         summed = cash + foreign_cash + sum(p["value_krw"] for p in positions)
         total = num(dom.get("nt_asts_val_amt")) or summed
