@@ -42,6 +42,24 @@ def test_twr_needs_points():
     assert P.time_weighted_return([], [(_d(0), 1)]) is None
 
 
+def test_implausible_day_finds_corrupt_record():
+    """입금이 장부에 늦게 반영되면 그 기간 수익률이 -86% 처럼 찍힌다(10/27 실사고) — 그날을 짚어낸다."""
+    flows = [(_d(0), 1_000_000), (_d(2), 6_000_000)]
+    points = [(_d(0), 1_000_000), (_d(1), 1_010_000), (_d(2), 1_020_000), (_d(3), 7_100_000)]
+    assert P.implausible_day(points, flows) == _d(2)
+    assert P.implausible_day(points[:2], flows) is None
+
+
+def test_performance_hides_twr_when_records_are_corrupt(ap):
+    _setup(ap, flows=[(datetime(2026, 10, 5, 1, 0, tzinfo=timezone.utc), 1_000_000)])
+    # 10/7 기록이 두 배로 찍힌 날(잔고 이중 계산)
+    ap.record_equity("kim", "my-kb", datetime(2026, 10, 7, 5, 0, tzinfo=timezone.utc), 4_200_000)
+    r = P.performance("kim", "my-kb", now=NOW, value_fn=lambda acct: acct.cash, price_on=_prices(SPY_IEF))
+    assert r["twr_pct"] is None
+    assert any("2026-10-07" in n for n in r["notes"])
+    assert r["pnl"] == 150_000          # 손익(넣은 돈 대비)은 그대로 보인다
+
+
 def test_deposit_value_one_year():
     assert P.deposit_value([(_d(0), 1_000_000)], _d(365)) == pytest.approx(1_030_000)
     two = P.deposit_value([(_d(0), 1_000_000), (_d(365), 500_000)], _d(365))
