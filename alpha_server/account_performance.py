@@ -19,6 +19,7 @@ from typing import Callable, Optional
 
 KST = timezone(timedelta(hours=9))
 DEPOSIT_APR = 0.03            # 비교용 예금 금리(연)
+MAX_DAILY_MOVE = 0.5          # 기록 간 수익률이 ±50% 를 넘으면 시장이 아니라 기록 오류(장부 이중 계산·입금 반영 지연)로 본다
 START_BAND = 0.3              # 시작일 추정: 평가액이 원금의 ±30% 안에 들어온 구간부터를 이 계좌로 본다
 PRICE_CACHE_SEC = 600
 
@@ -64,6 +65,27 @@ def time_weighted_return(points: list[tuple[date, float]], flows: list[tuple[dat
             growth *= value / base
         prev = value
     return growth - 1.0
+
+
+def implausible_day(points: list[tuple[date, float]], flows: list[tuple[date, float]],
+                    max_move: float = MAX_DAILY_MOVE) -> Optional[date]:
+    """time_weighted_return 과 같은 기간 구분으로, 수익률이 ±max_move 를 넘는 첫 기록일. 없으면 None.
+
+    이런 기록이 하나라도 있으면 TWR 은 그 오류를 곱해 버린다(10월 실계좌: -95%) — 보여주지 않는 편이 낫다.
+    """
+    points = sorted(points)
+    flows = sorted(flows)
+    prev, i = None, 0
+    for day, value in points:
+        moved = 0.0
+        while i < len(flows) and flows[i][0] <= day:
+            moved += flows[i][1]
+            i += 1
+        base = moved if prev is None else prev + moved
+        if base > 0 and abs(value / base - 1.0) > max_move:
+            return day
+        prev = value
+    return None
 
 
 def deposit_value(flows: list[tuple[date, float]], end: date, apr: float = DEPOSIT_APR) -> float:
@@ -308,9 +330,14 @@ def compute(username: str, portfolio: str, *, now: Optional[datetime] = None,
     if value is not None:
         points.append((today, value))
     twr = time_weighted_return(points, flows) if points and flows else None
-    out["twr_pct"] = _pct(twr)
-    if twr is None:
+    bad_day = implausible_day(points, flows) if twr is not None else None
+    if bad_day is not None:
+        twr = None
+        notes.append(f"{bad_day.isoformat()} 평가액 기록이 하루 {MAX_DAILY_MOVE:.0%} 넘게 바뀌어(기록 오류로 보임) "
+                     "시간가중수익률을 보이지 않습니다")
+    elif twr is None:
         notes.append("시간가중수익률을 계산할 평가액 기록이 부족합니다")
+    out["twr_pct"] = _pct(twr)
 
     # 비교 기준
     benchmarks = []
