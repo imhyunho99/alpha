@@ -27,6 +27,16 @@ def _silence_notify(monkeypatch, tmp_path):
 
 
 @_pytest.fixture(autouse=True)
+def _isolate_audit_and_risk_files(monkeypatch, tmp_path):
+    """감사 로그·하루 매수 한도는 실계좌 서버가 쓰는 파일이다. 실측(11/1): 테스트가 실제 감사 로그에
+    가짜 리밸런싱 52줄('u/my-kb')을 남겼다 — 해시 체인이라 지울 수도 없다."""
+    from alpha_server import audit_log, risk_manager
+
+    monkeypatch.setattr(audit_log, "LOG_FILE", str(tmp_path / "audit.log.jsonl"))
+    monkeypatch.setattr(risk_manager, "STATE_FILE", str(tmp_path / "risk_state.json"))
+
+
+@_pytest.fixture(autouse=True)
 def _isolate_momentum_files(monkeypatch, tmp_path):
     """추세 주식 선정·소수점 불가 기록은 실계좌가 쓰는 파일이다. 테스트가 절대 건드리지 않게."""
     from alpha_server.autopilot import momentum

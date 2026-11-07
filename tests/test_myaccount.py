@@ -367,6 +367,11 @@ def test_sleeve_resync_rebuilds_from_real_account(ap_dir):
                 r._payload["dataBody"]["nt_asts_val_amt"] = "8500000"
             return r
 
+    from alpha_server.autopilot import mirror
+
+    state = mirror.load_state("kim", M.SHADOW_PORTFOLIO)    # 에이전트 실주문 기록이 있어야 에이전트 몫이다
+    state.setdefault("orders", []).append({"ticker": "NVDA", "action": "buy", "status": "success", "dry_run": False})
+    mirror._save_state("kim", M.SHADOW_PORTFOLIO, state)
     kb2 = KbBroker("k", "s", dry_run=True, session=Bought(), suffix_fn=lambda c: ".KS")
     status = M.seed_shadow("kim", "kb", broker=kb2, now=NOW)
     account, _ = ap_dir.load_account("kim", M.SHADOW_PORTFOLIO)
