@@ -34,6 +34,7 @@ MAX_LIVE_ORDERS_PER_DAY = 40           # 넘으면 같은 주문이 반복되는
 MAX_ORDER_SHARE = 0.40                 # 주문 한 건이 계좌의 40% 를 넘으면 마찬가지
 FLOW_MIN_KRW = 50_000                  # 이보다 작은 현금 변화는 입출금으로 보지 않는다(수수료·배당 잡음)
 MIN_ORDER_KRW = 50_000
+SHADOW_AHEAD_MAX = 0.10                # 그림자 장부가 실제 몫보다 이만큼 넘게 많으면 주문하지 않는다(없는 돈으로 주문)
 DAILY_RESYNC = timedelta(hours=24)
 NOT_FRACTIONAL = "소수점매매 가능 종목이 아닙니다"   # KB 거절 문구(10/13 실측)
 KEEP = 200
@@ -171,6 +172,52 @@ def update_baseline(baseline: dict[str, float], prev: Optional[dict], real: dict
     return {t: q for t, q in out.items() if q > 1e-6}
 
 
+def ours_tickers(state: dict) -> set[str]:
+    """에이전트가 실주문한 종목(대기 중 포함). 이 종목들의 수량 변화는 사용자 매매가 아니라 에이전트 몫이다."""
+    return set(state.get("pending", {})) | {o["ticker"] for o in state.get("orders", [])[-50:]
+                                            if o.get("status") == "success" and not o.get("dry_run", True)}
+
+
+def user_trade_krw(prev: Optional[dict], real: dict, ours: set[str], price_krw: dict[str, float]) -> float:
+    """사용자가 직접 사고판 금액(원, 산 쪽이 +). update_baseline 과 같은 수량 변화를 돈으로 센다."""
+    if not prev:
+        return 0.0
+    qty_now = {p["ticker"]: float(p["quantity"]) for p in real.get("positions", [])}
+    total = 0.0
+    for t in set(qty_now) | set(prev.get("qty", {})):
+        if t in ours:
+            continue
+        dq = qty_now.get(t, 0.0) - float(prev.get("qty", {}).get(t, 0.0))
+        if abs(dq) > 1e-6 and price_krw.get(t):
+            total += dq * price_krw[t]
+    return total
+
+
+def sleeve_cash_change(user_cash: float, trade_krw: float, flow: float) -> tuple[float, float]:
+    """'새 돈만' 장부에서 에이전트 현금이 얼마 바뀌는지와 새 사용자 현금.
+
+    실계좌 현금은 하나지만 주인이 둘이다. 사용자 현금(user_cash)은 사용자가 기존 종목을 직접 팔아 생긴 돈이다.
+      - 직접 매도: 판 돈은 사용자 현금으로 간다(에이전트가 쓰지 않음).
+      - 직접 매수: 사용자 현금에서 먼저 내고, 모자란 만큼은 에이전트 현금에서 나간 것이다.
+        실측(10/29, 11/3·11/5): 이걸 0 으로 봐서 장부가 실제보다 100만원 넘게 많아졌고, 없는 돈으로 낸 주문이 실패했다.
+      - 출금: 사용자 현금에서 먼저, 나머지는 에이전트 현금에서. 입금은 전부 에이전트 몫.
+    """
+    delta = 0.0
+    if trade_krw < 0:
+        user_cash += -trade_krw
+    elif trade_krw > 0:
+        use = min(user_cash, trade_krw)
+        user_cash -= use
+        delta -= trade_krw - use
+    if flow < 0:
+        use = min(user_cash, -flow)
+        user_cash -= use
+        delta += flow + use
+    else:
+        delta += flow
+    return delta, user_cash
+
+
 FLOWS_KEEP = 500
 
 
@@ -222,15 +269,31 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
                 price_krw[p["ticker"]] = float(p["value_krw"]) / float(p["quantity"])
         # 입출금: 실계좌에 돈이 들어오거나 나가면 모의(그림자) 계좌의 현금도 같이 맞춘다
         prev_real = state.get("last_real")
-        flow = cash_flow(prev_real, real, price_krw)
+        ours = ours_tickers(state)
+        # 입출금은 따로 둔 기준점(flow_marker)과 비교한다. 보류하는 동안 기준점을 그대로 두어야 그 입금이
+        # 보류가 끝난 뒤에 반영된다. 실측(11/6): 기준점을 매번 옮겨 입금 100만원이 영영 빠졌다.
+        flow_marker = state.get("flow_marker") or prev_real
+        flow = cash_flow(flow_marker, real, price_krw)
         # 국내 주식은 결제가 D+2 라 실주문 직후엔 주식만 늘고 예수금은 그대로 보인다 — 입금으로 오인한다.
-        # 최근 3일 안에 실주문이 있었으면 자동 반영하지 않는다(그땐 '지금 잔고로 다시 맞추기').
+        # 최근 3일 안에 실주문이 있었으면 아직 반영하지 않는다(기준점을 두고 다음에 다시 센다).
         last_live = state.get("last_live_order_at")
         if flow and last_live and now - datetime.fromisoformat(last_live) < timedelta(days=3):
             summary["flow_skipped"] = round(flow)
             flow = 0.0
-        state["last_real"] = _real_marker(real)   # 아래 어느 경로로 끝나도 같은 입금을 두 번 세지 않게 바로 갱신
-        if flow and cfg.get("shadow_of"):
+        else:
+            state["flow_marker"] = _real_marker(real)
+        trade = user_trade_krw(prev_real, real, ours, price_krw) if cfg.get("sleeve") else 0.0
+        state["last_real"] = _real_marker(real)   # 아래 어느 경로로 끝나도 같은 매매를 두 번 세지 않게 바로 갱신
+        delta = flow
+        if cfg.get("sleeve") and (flow or trade):
+            delta, state["user_cash"] = sleeve_cash_change(float(state.get("user_cash") or 0), trade, flow)
+            if trade:
+                summary["user_trade"] = round(trade)
+                audit_log.record("trade", "broker_mirror_user_trade", actor=f"{username}/{portfolio}",
+                                 amount=round(trade), sleeve_delta=round(delta - flow),
+                                 user_cash=round(state["user_cash"]))
+        if delta and cfg.get("shadow_of"):
+            flow = delta
             account.cash += flow
             _, last_rebalance = store.load_account(username, portfolio)
             store.save_account(username, account, last_rebalance, portfolio, last_tracked_at=now)
@@ -247,13 +310,19 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
         rm = RiskManager(broker=broker)
         view = real
         if cfg.get("sleeve"):
-            ours = set(state.get("pending", {})) | {o["ticker"] for o in state.get("orders", [])[-50:]
-                                                    if o.get("status") == "success" and not o.get("dry_run", True)}
             baseline = update_baseline(cfg.get("baseline", {}), prev_real, real, ours)
             if baseline != cfg.get("baseline", {}):
                 cfg = {**cfg, "baseline": baseline}
                 store.save_config(username, cfg, portfolio)
             view = sleeve_view(real, baseline, account.equity(prices), price_krw)
+            # 장부가 실제 몫보다 많으면 없는 돈으로 주문하게 된다(11/3~5: 매수 50여 건이 '매수가능금액 부족').
+            # 반대(장부가 적음)는 덜 사는 것뿐이라 막지 않는다 — 보류 중인 입금이 그 경우다.
+            real_cash = float(real.get("cash") or 0) + float(real.get("foreign_cash_krw") or 0)
+            actual = sum(float(p["value_krw"]) for p in view["positions"]) + real_cash - float(state.get("user_cash") or 0)
+            shadow = float(view["total_value"] or 0)
+            if actual > 0 and shadow > actual * (1 + SHADOW_AHEAD_MAX):
+                raise RuntimeError(f"장부 불일치 — 에이전트 장부 {shadow:,.0f}원이 실제 몫 {actual:,.0f}원보다 "
+                                   f"{SHADOW_AHEAD_MAX:.0%} 넘게 많아 주문하지 않음 ('지금 잔고로 다시 맞추기' 필요)")
         from ..newsdesk.engine import min_trade
 
         from ..risk_manager import position_cap

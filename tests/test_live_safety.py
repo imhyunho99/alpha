@@ -358,3 +358,69 @@ def test_dry_run_buys_do_not_use_daily_buy_limit(env):
     if os.path.exists(risk_manager.STATE_FILE):            # 한 건도 세지 않았으면 파일이 아예 안 생긴다
         with open(risk_manager.STATE_FILE) as f:
             assert json.load(f)["buys"] == 0
+
+
+# ---------- '새 돈만' 장부: 사용자 직접 매매와 보류된 입금 (11/3~6 실측) ----------
+
+def test_sleeve_cash_change_rules():
+    from alpha_server.autopilot.mirror import sleeve_cash_change
+
+    # 200만 입금 + 기존 종목 220만 직접 매수 → 모자란 20만은 에이전트 현금에서 나간 것
+    assert sleeve_cash_change(0, 2_200_000, 2_000_000) == (pytest.approx(-200_000), 0)
+    # 직접 매도 대금은 사용자 현금 — 에이전트 장부는 그대로
+    assert sleeve_cash_change(0, -500_000, 0) == (0, 500_000)
+    # 그 돈으로 다시 사면 사용자 현금에서 먼저
+    assert sleeve_cash_change(500_000, 300_000, 0) == (0, 200_000)
+    # 출금도 사용자 현금에서 먼저
+    assert sleeve_cash_change(200_000, 0, -500_000) == (pytest.approx(-300_000), 0)
+
+
+def _sleeve_env(env, cash=1_000_000):
+    mirror, store, cfg = env
+    cfg = {**cfg, "sleeve": True, "baseline": {"005930.KS": 14}, "principal": cash,
+           "broker": {"name": "kb", "dry_run": True}}
+    store.save_config("kim", cfg, "my-kb")
+    acct = PaperAccount(cash=cash)
+    store.save_account("kim", acct, None, "my-kb")
+    prices = {"005930.KS": 220_000.0}
+    b = LiveBroker(total=14 * 220_000 + cash, cash=cash,
+                   positions=[{"ticker": "005930.KS", "quantity": 14, "value_krw": 14 * 220_000}])
+    return mirror, store, cfg, acct, prices, b
+
+
+def test_user_buying_baseline_beyond_deposit_comes_out_of_agent_cash(env):
+    """11/3 실측 재현: 200만 입금하고 삼성전자 10주(220만)를 직접 샀는데 장부는 +200만으로만 봤다."""
+    mirror, store, cfg, acct, prices, b = _sleeve_env(env)
+    mirror.sync("kim", "my-kb", cfg, acct, prices, ALL_CLOSED, broker=b)
+    b.cash = 1_000_000 + 2_000_000 - 2_200_000
+    b.positions = [{"ticker": "005930.KS", "quantity": 24, "value_krw": 24 * 220_000}]
+    b.total = b.cash + 24 * 220_000
+    cfg = store.load_config("kim", "my-kb")
+    mirror.sync("kim", "my-kb", cfg, acct, prices, ALL_CLOSED + timedelta(hours=1), broker=b)
+    assert acct.cash == pytest.approx(800_000)                                   # 실제 남은 현금과 같다
+    cfg = store.load_config("kim", "my-kb")
+    assert cfg["baseline"]["005930.KS"] == 24 and cfg["principal"] == 800_000    # 원금도 그만큼 줄었다
+
+
+def test_deposit_held_during_live_window_is_applied_later(env):
+    """11/6 실측 재현: 실주문 3일 보류 중에 들어온 입금 100만원이 기준점이 옮겨지며 영영 빠졌다."""
+    mirror, store, cfg, acct, prices, b = _sleeve_env(env)
+    mirror.sync("kim", "my-kb", cfg, acct, prices, ALL_CLOSED, broker=b)
+    state = mirror.load_state("kim", "my-kb")
+    state["last_live_order_at"] = ALL_CLOSED.isoformat()
+    mirror._save_state("kim", "my-kb", state)
+    b.cash += 1_000_000
+    b.total += 1_000_000
+    out = mirror.sync("kim", "my-kb", cfg, acct, prices, ALL_CLOSED + timedelta(days=1), broker=b)
+    assert out.get("flow_skipped") == 1_000_000 and acct.cash == pytest.approx(1_000_000)
+    out = mirror.sync("kim", "my-kb", cfg, acct, prices, ALL_CLOSED + timedelta(days=4), broker=b)
+    assert out.get("flow") == 1_000_000 and acct.cash == pytest.approx(2_000_000)
+
+
+def test_shadow_ahead_of_real_blocks_orders(env):
+    """11/3~5 실측: 장부가 실제 몫보다 110만원 많아 SPY 매수가 50번 '매수가능금액 부족'으로 실패했다."""
+    mirror, store, cfg, acct, prices, b = _sleeve_env(env)
+    mirror.sync("kim", "my-kb", cfg, acct, prices, ALL_CLOSED, broker=b)
+    acct.cash = 2_000_000                                     # 장부만 100만원 많다
+    out = mirror.sync("kim", "my-kb", cfg, acct, prices, ALL_CLOSED + timedelta(hours=1), broker=b)
+    assert out["status"] == "error" and "장부 불일치" in out["message"] and not b.orders

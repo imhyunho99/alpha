@@ -409,9 +409,16 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
         # 다시 맞추기는 실계좌가 기준이다: 에이전트 몫 = 실계좌 − 기준 보유분, 현금 = 실계좌 현금.
         # 실측(10/9): 기록 모드에서 그림자가 산 주식(실제론 없음)을 남긴 채 현금만 실계좌로 덮어써 장부가 이중으로
         # 잡혔고, 그 차이를 '입금'으로 원금에 더했다(1,063,707 → 2,611,885).
-        old_base = {t: float(q) for t, q in (existing_cfg.get("baseline") or {}).items()}
+        from .autopilot import mirror
+
+        state = mirror.load_state(username, portfolio)
+        last_real = state.get("last_real")
+        ours = mirror.ours_tickers(state)
         prices = {p["ticker"]: float(p["value_krw"]) / float(p["quantity"])
                   for p in snap.get("positions", []) if p["quantity"] > 0 and p.get("value_krw")}
+        # 지난 연동 이후 사용자가 직접 산 기존 종목은 기준 보유분이다 — 에이전트 몫으로 잡지 않는다
+        old_base = mirror.update_baseline({t: float(q) for t, q in (existing_cfg.get("baseline") or {}).items()},
+                                          last_real, snap, ours)
         account = PaperAccount(cash=real_cash)
         for t, q in real_qty.items():
             mine = q - old_base.get(t, 0.0)
@@ -420,14 +427,19 @@ def seed_shadow(username: str, broker_name: str = "kb", temperature: int = SHADO
                 account.positions[t] = Position(t, mine, prev.avg_price if prev else prices[t])
         baseline = {t: min(q, real_qty.get(t, 0.0)) for t, q in old_base.items() if real_qty.get(t, 0.0) > 1e-6}
         # 원금은 입출금으로만 바뀐다 — 지난 연동 이후의 입출금을 여기서 반영
-        from .autopilot import mirror
-
-        state = mirror.load_state(username, portfolio)
-        flow = mirror.cash_flow(state.get("last_real"), snap, prices)
-        if flow and not _recent_live_orders(username, portfolio, now):
-            principal += flow
-            mirror.record_flow(state, now, flow)
-        state["last_real"] = mirror._real_marker(snap)
+        # 그림자 현금을 실계좌 현금으로 덮으므로, 아직 반영 안 된 입출금(보류 중인 것 포함)과 사용자 직접 매매,
+        # 사용자 현금(user_cash)까지 여기서 원금에 정산하고 기준점을 지금 잔고로 옮긴다. 안 그러면 같은 돈을
+        # 나중에 한 번 더 센다. 실주문 3일 보류는 두지 않는다 — 현금을 결제(D+2) 기준으로 읽어(PR #50)
+        # 국내 매수 직후 '주식만 늘어난' 착시가 없고, 이 현금은 어차피 지금 장부에 들어간다.
+        flow = mirror.cash_flow(state.get("flow_marker") or last_real, snap, prices)
+        trade = mirror.user_trade_krw(last_real, snap, ours, prices)
+        delta, user_cash = mirror.sleeve_cash_change(float(state.get("user_cash") or 0), trade, flow)
+        delta += user_cash                     # 사용자 현금도 이제 에이전트 장부 현금에 들어간다
+        if abs(delta) >= mirror.FLOW_MIN_KRW:
+            principal += delta
+            mirror.record_flow(state, now, delta)
+        state["user_cash"] = 0.0
+        state["last_real"] = state["flow_marker"] = mirror._real_marker(snap)
         mirror._save_state(username, portfolio, state)
     elif sleeve:
         account = PaperAccount(cash=real_cash)
