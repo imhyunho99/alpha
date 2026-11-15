@@ -410,9 +410,9 @@ def test_resync_keeps_live_broker_and_other_config(ap_dir):
     status = M.seed_shadow("kim", "kb", broker=kb, now=NOW, strategy="allocation")
     assert status["dry_run"] is True and status["strategy"] == "allocation"
     cfg = ap_dir.load_config("kim", M.SHADOW_PORTFOLIO)
-    del cfg["strategy"]                       # 키가 없던 옛 그림자(10/10 옛 서버)는 기본 전략으로(10/11 결정: momentum)
+    del cfg["strategy"]                       # 키가 없던 옛 그림자(10/10 옛 서버)는 기본 전략으로(11/15 결정: spy_dca)
     ap_dir.save_config("kim", cfg, M.SHADOW_PORTFOLIO)
-    assert M.seed_shadow("kim", "kb", broker=kb, now=NOW)["strategy"] == "momentum"
+    assert M.seed_shadow("kim", "kb", broker=kb, now=NOW)["strategy"] == "spy_dca"
 
 
 def test_restart_stopped_shadow_resets_live_to_record_only(ap_dir):
@@ -438,7 +438,7 @@ def test_new_shadow_always_starts_record_only(ap_dir):
     ap_dir.save_config("kim", {"active": False, "broker": {"name": "kb", "dry_run": False}}, M.SHADOW_PORTFOLIO)
     kb, _ = _kb()
     status = M.seed_shadow("kim", "kb", broker=kb, now=NOW)
-    assert status["dry_run"] is True and status["strategy"] == "momentum"
+    assert status["dry_run"] is True and status["strategy"] == "spy_dca"
     assert ap_dir.load_config("kim", M.SHADOW_PORTFOLIO)["broker"] == {"name": "kb", "dry_run": True}
 
 

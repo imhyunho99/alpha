@@ -260,7 +260,9 @@ def shadow_text(data) -> str:
         scope += f" · 자산배분 주식(SPY) {stock}% / 채권(IEF) {100 - stock}%"
     elif data.get("strategy") == "momentum":
         scope += " · 추세 주식: SPY 70% + S&P 500 12개월 상승 상위 10종목 각 3% (매달 교체, -20% 손절)"
-    if data.get("strategy") != "momentum":     # 추세 주식은 온도를 안 쓴다
+    elif data.get("strategy") == "spy_dca":
+        scope += " · SPY 분할 매수: SPY 만 보유, 현금은 주마다 나눠 투입 (40주선은 알림만)"
+    if data.get("strategy") not in ("momentum", "spy_dca"):     # 추세 주식은 온도를 안 쓴다
         scope += f" · 온도 {data.get('temperature')}"
     parts = [f"{state} · {mode} · {scope}",
              f"시작 {str(data.get('seeded_at') or '')[:16].replace('T', ' ')}"]
