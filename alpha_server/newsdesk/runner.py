@@ -209,6 +209,12 @@ def _run_portfolio_locked(user, portfolio, recent, prices, now, watch, model_fn)
         result = _momentum_result(account, prices, now, int(cfg["temperature"]), last_rebalance,
                                   Journal(actor=f"{user}/{portfolio}"), score=cfg.get("momentum_score", "mom"),
                                   stop=cfg.get("momentum_stop_loss", "default"))
+    elif cfg.get("strategy") == "spy_dca":
+        result = _spy_dca_result(account, prices, now, last_rebalance, Journal(actor=f"{user}/{portfolio}"))
+        if cfg.get("shadow_of"):
+            from ..autopilot import spy_dca
+
+            spy_dca.ma40_check(user, portfolio, now)
     else:
         result = None
     own_watch = [t for t in watch if t in set(style.focus_tickers or DEFAULT_WATCH) | set(account.positions)]
@@ -298,6 +304,22 @@ def _momentum_result(account, prices, now, temperature, last_rebalance, journal,
     tgt = momentum.targets(picks, out)
     fills, decisions = allocation_step(account, snap, now, temperature, last_rebalance, journal,
                                        tgt=tgt, label=f"추세 주식({source})")
+    return NewsStepResult(now, account.equity(snap), fills, decisions)
+
+
+def _spy_dca_result(account, prices, now, last_rebalance, journal):
+    """SPY 분할 매수 전략(2026-11-15 사용자 결정). 뉴스는 매매에 쓰지 않는다."""
+    import math
+
+    from ..autopilot import spy_dca
+    from .engine import NewsStepResult
+
+    tickers = sorted({spy_dca.CORE} | set(account.positions))
+    snap = {t: p for t, p in prices.get_many(tickers, now).items()
+            if isinstance(p, (int, float)) and math.isfinite(p) and p > 0}
+    if any(t not in snap for t in tickers):
+        return NewsStepResult(now, account.equity(snap), skipped="시세 누락")
+    fills, decisions = spy_dca.dca_step(account, snap, now, last_rebalance, journal)
     return NewsStepResult(now, account.equity(snap), fills, decisions)
 
 
