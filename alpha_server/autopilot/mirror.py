@@ -134,11 +134,15 @@ def cash_flow(prev: Optional[dict], real: dict, price_krw: dict[str, float]) -> 
     cash = float(real.get("cash") or 0) + float(real.get("foreign_cash_krw") or 0)
     qty_now = {p["ticker"]: float(p["quantity"]) for p in real.get("positions", [])}
     qty_prev = prev.get("qty", {})
+    px_prev = prev.get("px", {})
     swapped = 0.0
     for t in set(qty_now) | set(qty_prev):
         dq = qty_now.get(t, 0.0) - float(qty_prev.get(t, 0.0))
-        if dq and price_krw.get(t):
-            swapped += dq * price_krw[t]
+        # 전량 판 종목은 지금 시세가 없다 — 빼먹으면 매도 대금이 입금으로 보인다(11/19 실측: 위성 3종목
+        # 매도 대금 38만원이 입금으로 잡혀 장부가 앞서고 주문이 막혔다). 기준점의 단가로 센다.
+        price = price_krw.get(t) or px_prev.get(t)
+        if dq and price:
+            swapped += dq * price
     flow = (cash - float(prev.get("cash", 0))) + swapped
     return flow if abs(flow) >= FLOW_MIN_KRW else 0.0
 
@@ -228,7 +232,10 @@ def record_flow(state: dict, at: datetime, amount: float) -> None:
 
 def _real_marker(real: dict) -> dict:
     return {"cash": float(real.get("cash") or 0) + float(real.get("foreign_cash_krw") or 0),
-            "qty": {p["ticker"]: float(p["quantity"]) for p in real.get("positions", [])}}
+            "qty": {p["ticker"]: float(p["quantity"]) for p in real.get("positions", [])},
+            # 전량 팔아 지금 시세가 없는 종목도 매도 대금을 빼고 셀 수 있게 기준점의 단가를 남긴다
+            "px": {p["ticker"]: float(p["value_krw"]) / float(p["quantity"])
+                   for p in real.get("positions", []) if float(p.get("quantity") or 0) > 0 and p.get("value_krw")}}
 
 
 def _trip_breaker(username: str, portfolio: str, state: dict, reason: str, now: datetime) -> None:

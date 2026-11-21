@@ -319,7 +319,10 @@ def _spy_dca_result(account, prices, now, last_rebalance, journal):
             if isinstance(p, (int, float)) and math.isfinite(p) and p > 0}
     if any(t not in snap for t in tickers):
         return NewsStepResult(now, account.equity(snap), skipped="시세 누락")
-    fills, decisions = spy_dca.dca_step(account, snap, now, last_rebalance, journal)
+    from ..risk_manager import RiskConfig, position_cap
+
+    cap = position_cap(spy_dca.CORE, RiskConfig())
+    fills, decisions = spy_dca.dca_step(account, snap, now, last_rebalance, journal, cap=cap)
     return NewsStepResult(now, account.equity(snap), fills, decisions)
 
 

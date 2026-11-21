@@ -104,3 +104,13 @@ def test_ma40_fetch_failure_is_quiet():
     def boom():
         raise RuntimeError("x")
     assert D.ma40_check("u", "my-kb", MON, fetch=boom) is None
+
+
+def test_buys_stop_at_fund_cap():
+    """장부도 risk 상한(지수 ETF 80%)에서 멈춰야 실계좌와 어긋나지 않는다."""
+    acc = PaperAccount(cash=300_000)
+    acc.positions = {"SPY": Position("SPY", 0.7, 1_000_000.0)}
+    D.dca_step(acc, {"SPY": 1_000_000.0}, MON, None, cap=0.8)
+    eq = acc.equity({"SPY": 1_000_000.0})
+    assert acc.positions["SPY"].quantity * 1_000_000 / eq == pytest.approx(0.8, abs=0.01)
+    assert acc.cash == pytest.approx(0.2 * eq, rel=0.05)
