@@ -150,6 +150,16 @@ def test_cash_flow_math():
     assert cash_flow(None, deposit, price) == 0.0
 
 
+def test_cash_flow_sold_out_ticker_is_not_a_deposit():
+    """11/19 실측: 전량 판 종목은 지금 시세가 없어 매도 대금이 입금으로 잡혔다. 기준점 단가로 뺀다."""
+    from alpha_server.autopilot.mirror import _real_marker, cash_flow
+
+    before = {"cash": 100_000, "positions": [{"ticker": "HPE", "quantity": 2.0, "value_krw": 140_000}]}
+    marker = _real_marker(before)
+    after = {"cash": 240_000, "positions": []}                                         # 매도 대금 결제
+    assert cash_flow(marker, after, {}) == 0.0
+
+
 def test_deposit_is_added_to_shadow_once(env):
     mirror, store, cfg = env
     cfg = {**cfg, "broker": {"name": "kb", "dry_run": True}}

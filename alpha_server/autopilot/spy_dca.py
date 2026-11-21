@@ -13,6 +13,8 @@
 - 현금은 한 주(ISO 주)에 한 번, max(현금/26, 100만 원)씩 SPY 로 산다 — 2,000만 원이면 약 20주.
   맥이 꺼져 지난 주를 건너뛰었으면 밀린 주만큼(최대 4주) 한 번에 산다.
 - 주문 한 건이 계좌의 40% 를 넘으면 mirror 차단기가 막는다(우회하지 않는다).
+- SPY 비중은 risk_manager 의 지수 ETF 상한(max_fund_pct, 기본 80%)을 넘기지 않는다. 장부가 상한 위로
+  사면 실주문은 상한에서 멈춰 장부만 앞서 간다(11/16 실측: 장부 100%, 실계좌 80%).
 """
 from __future__ import annotations
 
@@ -52,7 +54,7 @@ def tranche(cash: float, weeks: int) -> float:
 
 
 def dca_step(account, prices: dict[str, float], at: datetime, last_buy: Optional[datetime],
-             journal=None) -> tuple[list, list[dict]]:
+             journal=None, cap: float = 1.0) -> tuple[list, list[dict]]:
     """(fills, decisions). 가격이 하나라도 없으면 아무것도 하지 않는다."""
     from .allocation import _decision
 
@@ -66,7 +68,9 @@ def dca_step(account, prices: dict[str, float], at: datetime, last_buy: Optional
             fills.append(fill)
             decisions.append(_decision(at, "sell", t, fill.gross, "SPY 만 보유로 전환 — 정리", "SPY 분할 매수"))
     weeks = weeks_since(last_buy, at)
-    amount = min(tranche(account.cash, weeks), account.cash * 0.999)
+    pos = account.positions.get(CORE)
+    room = account.equity(prices) * cap - (pos.quantity * prices[CORE] if pos else 0.0)
+    amount = min(tranche(account.cash, weeks), account.cash * 0.999, max(0.0, room))
     if amount > MIN_ORDER_KRW:
         fill = account.buy(CORE, amount, prices[CORE], prices, 1.0)
         if fill:
