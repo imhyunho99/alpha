@@ -434,3 +434,23 @@ def test_shadow_ahead_of_real_blocks_orders(env):
     acct.cash = 2_000_000                                     # 장부만 100만원 많다
     out = mirror.sync("kim", "my-kb", cfg, acct, prices, ALL_CLOSED + timedelta(hours=1), broker=b)
     assert out["status"] == "error" and "장부 불일치" in out["message"] and not b.orders
+
+
+def test_live_buys_are_capped_at_spendable_cash(env):
+    """11/23 실측: SPY 72만원 주문을 현금 71.3만원으로 넣어 '매수가능금액 부족' 거절. 98% 안으로 줄여 낸다."""
+    mirror, _, cfg = env
+    acct, prices = _shadow()
+    b = LiveBroker(cash=400_000)
+    mirror.sync("kim", "my-kb", cfg, acct, prices, KR_OPEN, broker=b)
+    assert b.orders, "줄여서라도 주문은 나가야 한다"
+    spent = sum(q * prices[t] for t, side, q in b.orders if side == "buy")
+    assert spent <= 400_000 * mirror.BUY_CASH_BUFFER + 1
+
+
+def test_live_buy_skipped_when_cash_below_min(env):
+    mirror, _, cfg = env
+    acct, prices = _shadow()
+    b = LiveBroker(cash=10_000)
+    mirror.sync("kim", "my-kb", cfg, acct, prices, KR_OPEN, broker=b)
+    assert not [o for o in b.orders if o[1] == "buy"]
+    assert "005930.KS" in mirror.load_state("kim", "my-kb")["deferred"]

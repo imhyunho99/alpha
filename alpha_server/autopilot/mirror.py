@@ -34,6 +34,7 @@ MAX_LIVE_ORDERS_PER_DAY = 40           # 넘으면 같은 주문이 반복되는
 MAX_ORDER_SHARE = 0.40                 # 주문 한 건이 계좌의 40% 를 넘으면 마찬가지
 FLOW_MIN_KRW = 50_000                  # 이보다 작은 현금 변화는 입출금으로 보지 않는다(수수료·배당 잡음)
 MIN_ORDER_KRW = 50_000
+BUY_CASH_BUFFER = 0.98                 # 매수는 주문가능 현금의 98% 까지 — 수수료·환전 여유(11/23: 72만원 주문, 현금 71.3만 → 거절)
 SHADOW_AHEAD_MAX = 0.10                # 그림자 장부가 실제 몫보다 이만큼 넘게 많으면 주문하지 않는다(없는 돈으로 주문)
 DAILY_RESYNC = timedelta(hours=24)
 NOT_FRACTIONAL = "소수점매매 가능 종목이 아닙니다"   # KB 거절 문구(10/13 실측)
@@ -374,6 +375,8 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
         if state.get("live_day") != day:
             state["live_day"], state["live_count"] = day, 0
         total = float(real.get("total_value") or 0)
+        # 매도 대금은 결제 전이라 바로 못 쓴다 — 이번에 쓸 수 있는 돈은 지금 현금뿐
+        spendable = (float(real.get("cash") or 0) + float(real.get("foreign_cash_krw") or 0)) * BUY_CASH_BUFFER
         deferred = []
         for o in orders:
             if live:
@@ -425,6 +428,20 @@ def sync(username: str, portfolio: str, cfg: dict, account, prices: dict[str, fl
                         events.append({"kind": "failed", **o})
                     done.append(o)
                     continue
+            if live and o["action"] == "buy" and o["amount_krw"] > spendable:
+                if spendable < MIN_ORDER_KRW:
+                    o.update(status="skipped", message=f"주문가능 현금 부족({spendable:,.0f}원) — 다음에 다시")
+                    deferred.append(o["ticker"])
+                    continue
+                korean = o["ticker"].upper().endswith((".KS", ".KQ"))
+                scale = spendable / o["amount_krw"]
+                o["quantity"] = math.floor(o["quantity"] * scale) if korean else round(o["quantity"] * scale, 6)
+                if o["quantity"] <= 0:
+                    deferred.append(o["ticker"])
+                    continue
+                o["amount_krw"] = round(o["amount_krw"] * scale)
+            if live and o["action"] == "buy":
+                spendable -= o["amount_krw"]
             if live and o["action"] == "buy" and not o["ticker"].upper().endswith((".KS", ".KQ")):
                 res = broker.execute_order(o["ticker"], "buy", o["quantity"], amount_krw=o["amount_krw"])
             else:
